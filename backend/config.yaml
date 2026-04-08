@@ -1,0 +1,57 @@
+server:
+  port: 8080
+  mode: debug  # debug / release
+
+database:
+  host: 127.0.0.1
+  port: 3307
+  username: root
+  password: 123456
+  dbname: feed
+  charset: utf8mb4
+  max_idle_conns: 10
+  max_open_conns: 100
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: "123456"
+  db: 1
+  pool_size: 100
+
+rabbitmq:
+  host: 127.0.0.1
+  port: 5672
+  username: admin
+  password: 123456
+  vhost: "/"
+  queue: feed_fanout_queue
+  prefetch: 50
+  consumers: 10
+
+jwt:
+  secret: "feed-system-secret-key-2024"
+  expire: 72  # hours
+
+feed:
+  # 大V阈值：粉丝数超过此值的用户视为大V，采用拉模式
+  big_v_threshold: 1000
+  # 普通用户推送上限：粉丝数低于此值的用户采用推模式
+  push_fan_limit: 1000
+  # 收件箱缓存大小：每个用户收件箱最多缓存的feed数量
+  inbox_max_size: 1000
+  # 发件箱缓存大小：大V发件箱最多缓存的feed数量
+  outbox_max_size: 500
+  # 时间线拉取默认分页大小
+  page_size: 20
+upload:
+  # 上传文件存储路径
+  path: ./uploads
+  # 允许的图片类型
+  image_exts: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+  # 允许的视频类型
+  video_exts: [".mp4", ".mov", ".avi", ".webm"]
+  # 图片最大大小 (MB)
+  image_max_size: 10
+  # 视频最大大小 (MB)
+  video_max_size: 100
