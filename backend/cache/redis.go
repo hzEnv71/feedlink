@@ -2,7 +2,7 @@ package cache
 
 import (
 	"context"
-	"feed-system/config"
+	"feed/config"
 	"fmt"
 	"log"
 	"time"

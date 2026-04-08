@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"feed-system/middleware"
-	"feed-system/services"
-	"feed-system/utils"
+	"feed/middleware"
+	"feed/services"
+	"feed/utils"
 	"strconv"
 
 	"github.com/gin-gonic/gin"

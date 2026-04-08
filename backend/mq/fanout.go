@@ -2,9 +2,9 @@ package mq
 
 import (
 	"encoding/json"
-	"feed-system/cache"
-	"feed-system/config"
-	"feed-system/models"
+	"feed/cache"
+	"feed/config"
+	"feed/models"
 	"log"
 	"sync"
 	"time"

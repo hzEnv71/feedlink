@@ -2,10 +2,10 @@ package services
 
 import (
 	"errors"
-	"feed-system/cache"
-	"feed-system/config"
-	"feed-system/models"
-	"feed-system/utils"
+	"feed/cache"
+	"feed/config"
+	"feed/models"
+	"feed/utils"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"

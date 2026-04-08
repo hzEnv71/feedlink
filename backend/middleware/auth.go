@@ -1,7 +1,7 @@
 package middleware
 
 import (
-	"feed-system/utils"
+	"feed/utils"
 	"strings"
 
 	"github.com/gin-gonic/gin"

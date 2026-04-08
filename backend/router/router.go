@@ -1,9 +1,9 @@
 package router
 
 import (
-	"feed-system/config"
-	"feed-system/handlers"
-	"feed-system/middleware"
+	"feed/config"
+	"feed/handlers"
+	"feed/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,6 +26,7 @@ func SetupRouter() *gin.Engine {
 	followHandler := handlers.NewFollowHandler()
 	feedHandler := handlers.NewFeedHandler()
 	uploadHandler := handlers.NewUploadHandler()
+	messageHandler := handlers.NewMessageHandler()
 
 	// API路由组
 	api := r.Group("/api")
@@ -77,6 +78,11 @@ func SetupRouter() *gin.Engine {
 			authenticated.POST("/feeds/:id/comments", feedHandler.CommentFeed)
 			authenticated.GET("/feeds/:id/comments", feedHandler.GetComments)
 			authenticated.DELETE("/feeds/:id/comments/:comment_id", feedHandler.DeleteComment)
+
+			// 私信
+			authenticated.POST("/messages", messageHandler.SendMessage)
+			authenticated.GET("/messages/conversations", messageHandler.GetConversations)
+			authenticated.GET("/messages/:target_id", messageHandler.GetConversationMessages)
 		}
 	}
 

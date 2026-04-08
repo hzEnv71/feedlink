@@ -30,7 +30,7 @@ rabbitmq:
   consumers: 10
 
 jwt:
-  secret: "feed-system-secret-key-2024"
+  secret: "feed-secret-key-2024"
   expire: 72  # hours
 
 feed:

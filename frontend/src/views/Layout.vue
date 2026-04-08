@@ -4,16 +4,20 @@
     <el-header class="header">
       <div class="header-content">
         <div class="logo" @click="router.push('/')">
-          📱 Feed
+          Feed
         </div>
         <div class="nav-links">
           <el-button text @click="router.push('/')">
-            <el-icon><HomeFilled /></el-icon>
+            <el-icon><Connection /></el-icon>
             动态
           </el-button>
           <el-button text @click="router.push('/discover')">
             <el-icon><Search /></el-icon>
             发现
+          </el-button>
+          <el-button text @click="router.push('/messages')">
+            <el-icon><ChatLineRound /></el-icon>
+            消息
           </el-button>
         </div>
         <div class="user-info">

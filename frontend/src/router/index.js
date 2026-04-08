@@ -34,6 +34,11 @@ const routes = [
                 name: 'Discover',
                 component: () => import('../views/Discover.vue'),
             },
+            {
+                path: 'messages',
+                name: 'Messages',
+                component: () => import('../views/Messages.vue'),
+            },
         ],
     },
 ]

@@ -2,9 +2,9 @@ package services
 
 import (
 	"errors"
-	"feed-system/cache"
-	"feed-system/models"
-	"feed-system/mq"
+	"feed/cache"
+	"feed/models"
+	"feed/mq"
 	"log"
 	"sort"
 	"strconv"

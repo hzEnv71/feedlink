@@ -102,3 +102,16 @@ export const feedApi = {
         return request.delete(`/feeds/${feedId}/comments/${commentId}`)
     },
 }
+
+// ==================== 消息相关 ====================
+export const messageApi = {
+    sendMessage(toUserId, content) {
+        return request.post('/messages', { to_user_id: toUserId, content })
+    },
+    getConversations(page = 1, pageSize = 20) {
+        return request.get('/messages/conversations', { params: { page, page_size: pageSize } })
+    },
+    getMessages(targetUserId, page = 1, pageSize = 30) {
+        return request.get(`/messages/${targetUserId}`, { params: { page, page_size: pageSize } })
+    },
+}

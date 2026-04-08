@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"feed-system/config"
+	"feed/config"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -22,7 +22,7 @@ func GenerateToken(userID uint, username string) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expireHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "feed-system",
+			Issuer:    "feed",
 		},
 	}
 

@@ -1,7 +1,7 @@
 package models
 
 import (
-	"feed-system/config"
+	"feed/config"
 	"fmt"
 	"log"
 
@@ -48,6 +48,7 @@ func InitDB() error {
 		&Like{},
 		&Comment{},
 		&ProfileVisit{},
+		&Message{},
 	)
 	if err != nil {
 		return fmt.Errorf("auto migrate failed: %w", err)

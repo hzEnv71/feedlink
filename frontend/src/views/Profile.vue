@@ -59,6 +59,7 @@
         >
           {{ user.is_followed ? '取消关注' : '关注' }}
         </el-button>
+        <el-button @click="goToChat">私信</el-button>
       </div>
     </div>
 
@@ -370,6 +371,11 @@ function formatVisitTime(timeStr) {
 
 function goToProfile(userId) {
   router.push(`/profile/${userId}`)
+}
+
+function goToChat() {
+  if (!user.value?.id) return
+  router.push(`/messages?target=${user.value.id}`)
 }
 </script>
 

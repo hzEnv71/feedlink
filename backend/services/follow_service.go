@@ -2,8 +2,8 @@ package services
 
 import (
 	"errors"
-	"feed-system/cache"
-	"feed-system/models"
+	"feed/cache"
+	"feed/models"
 
 	"gorm.io/gorm"
 )

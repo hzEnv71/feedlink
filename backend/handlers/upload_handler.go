@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"feed-system/config"
-	"feed-system/utils"
+	"feed/config"
+	"feed/utils"
 	"fmt"
 	"os"
 	"path/filepath"

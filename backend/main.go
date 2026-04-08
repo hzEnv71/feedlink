@@ -1,11 +1,11 @@
 package main
 
 import (
-	"feed-system/cache"
-	"feed-system/config"
-	"feed-system/models"
-	"feed-system/mq"
-	"feed-system/router"
+	"feed/cache"
+	"feed/config"
+	"feed/models"
+	"feed/mq"
+	"feed/router"
 	"fmt"
 	"log"
 )
