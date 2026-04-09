@@ -1,3 +1,5 @@
+// Package main 为应用启动入口。
+// 启动顺序：配置 -> 数据库 -> Redis -> RabbitMQ -> 路由服务。
 package main
 
 import (

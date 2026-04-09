@@ -66,7 +66,7 @@
           <button v-if="canDeleteFeed" class="inline-delete-btn" type="button" @click="confirmDelete">删除</button>
         </div>
         <div class="meta-actions">
-          <el-popover placement="left" trigger="click" width="178" popper-class="moments-action-pop">
+          <el-popover placement="left" trigger="click" width="178" popper-class="moments-action-pop" :show-arrow="false">
             <template #reference>
               <button class="dot-btn" type="button" aria-label="操作菜单">··</button>
             </template>
@@ -473,6 +473,18 @@ function formatTime(timeStr) {
   background: #44484f;
   border-radius: 4px;
   padding: 0;
+}
+
+/* 去掉 el-popover 默认外层白框，只保留内部黑色操作条 */
+:deep(.moments-action-pop.el-popper) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+:deep(.moments-action-pop .el-popper__arrow) {
+  display: none !important;
 }
 
 .action-btn {

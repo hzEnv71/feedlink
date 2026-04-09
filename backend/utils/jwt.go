@@ -7,6 +7,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// Claims 定义 JWT 载荷字段。
+// 仅放鉴权必需信息，避免放敏感业务数据。
 type Claims struct {
 	UserID   uint   `json:"user_id"`
 	Username string `json:"username"`
@@ -32,7 +34,7 @@ func GenerateToken(userID uint, username string) (string, error) {
 
 // ParseToken 解析JWT Token
 func ParseToken(tokenString string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
 		return []byte(config.AppConfig.JWT.Secret), nil
 	})
 

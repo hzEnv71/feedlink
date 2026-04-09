@@ -9,14 +9,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// FollowHandler 负责关注关系域 HTTP 入口：关注、取关、粉丝/关注列表。
 type FollowHandler struct {
 	followService *services.FollowService
 }
 
-func NewFollowHandler() *FollowHandler {
-	return &FollowHandler{
-		followService: services.NewFollowService(),
-	}
+func NewFollowHandler(followService *services.FollowService) *FollowHandler {
+	return &FollowHandler{followService: followService}
 }
 
 // Follow 关注用户

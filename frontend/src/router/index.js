@@ -21,13 +21,7 @@ const routes = [
         children: [
             {
                 path: '',
-                name: 'Timeline',
-                component: () => import('../views/Timeline.vue'),
-            },
-            {
-                path: 'profile/:id',
-                name: 'Profile',
-                component: () => import('../views/Profile.vue'),
+                redirect: '/discover',
             },
             {
                 path: 'discover',
@@ -35,9 +29,29 @@ const routes = [
                 component: () => import('../views/Discover.vue'),
             },
             {
+                path: 'timeline',
+                name: 'Timeline',
+                component: () => import('../views/Timeline.vue'),
+            },
+            {
+                path: 'publish',
+                name: 'Publish',
+                component: () => import('../views/Publish.vue'),
+            },
+            {
+                path: 'profile/:id',
+                name: 'Profile',
+                component: () => import('../views/Profile.vue'),
+            },
+            {
                 path: 'messages',
                 name: 'Messages',
                 component: () => import('../views/Messages.vue'),
+            },
+            {
+                path: 'search_result',
+                name: 'SearchResult',
+                component: () => import('../views/SearchResult.vue'),
             },
         ],
     },

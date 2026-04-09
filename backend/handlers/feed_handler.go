@@ -4,22 +4,24 @@ import (
 	"feed/middleware"
 	"feed/services"
 	"feed/utils"
+	"strings"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
+// FeedHandler 负责动态域 HTTP 入口：发布、时间线、互动（赞评转）等。
 type FeedHandler struct {
 	feedService *services.FeedService
 }
 
-func NewFeedHandler() *FeedHandler {
-	return &FeedHandler{
-		feedService: services.NewFeedService(),
-	}
+func NewFeedHandler(feedService *services.FeedService) *FeedHandler {
+	return &FeedHandler{feedService: feedService}
 }
 
-// PublishFeed 发布动态（支持文案+图片+视频）
+// PublishFeed 发布动态（支持文案+图片+视频）。
+// 输入：CreateFeedRequest（content/images/videos）
+// 输出：完整 FeedResponse（含作者与互动状态）。
 // POST /api/feeds
 func (h *FeedHandler) PublishFeed(c *gin.Context) {
 	currentUserID := middleware.GetCurrentUserID(c)
@@ -157,28 +159,33 @@ func (h *FeedHandler) GetUserFeeds(c *gin.Context) {
 	utils.SuccessPage(c, feeds, total, page, pageSize)
 }
 
-// GetTimeline 获取时间线（Feed流）- 展示本人和关注的用户的Feed
-// GET /api/timeline?page=1&page_size=20
+// GetTimeline 获取时间线（游标分页）。
+// GET /api/timeline?cursor=0&page_size=20
 func (h *FeedHandler) GetTimeline(c *gin.Context) {
 	currentUserID := middleware.GetCurrentUserID(c)
 
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	cursor, _ := strconv.Atoi(c.DefaultQuery("cursor", "0"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-
-	if page < 1 {
-		page = 1
+	if cursor < 0 {
+		cursor = 0
 	}
 	if pageSize < 1 || pageSize > 50 {
 		pageSize = 20
 	}
 
-	feeds, total, err := h.feedService.GetTimeline(currentUserID, page, pageSize)
+	feeds, nextCursor, hasMore, err := h.feedService.GetTimelineByCursor(currentUserID, cursor, pageSize)
 	if err != nil {
 		utils.Error(c, 500, "获取时间线失败")
 		return
 	}
 
-	utils.SuccessPage(c, feeds, total, page, pageSize)
+	utils.Success(c, gin.H{
+		"list":        feeds,
+		"cursor":      cursor,
+		"next_cursor": nextCursor,
+		"page_size":   pageSize,
+		"has_more":    hasMore,
+	})
 }
 
 // LikeFeed 点赞
@@ -301,6 +308,33 @@ func (h *FeedHandler) DeleteComment(c *gin.Context) {
 	}
 
 	utils.SuccessWithMessage(c, "删除评论成功", nil)
+}
+
+// SearchFeeds 搜索动态
+// GET /api/feeds/search?keyword=xxx&page=1&page_size=20
+func (h *FeedHandler) SearchFeeds(c *gin.Context) {
+	currentUserID := middleware.GetCurrentUserID(c)
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	if keyword == "" {
+		utils.Error(c, 400, "关键词不能为空")
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 50 {
+		pageSize = 20
+	}
+
+	feeds, total, err := h.feedService.SearchFeeds(keyword, page, pageSize, currentUserID)
+	if err != nil {
+		utils.Error(c, 500, "搜索动态失败")
+		return
+	}
+	utils.SuccessPage(c, feeds, total, page, pageSize)
 }
 
 // GetFeedLikers 获取点赞用户列表

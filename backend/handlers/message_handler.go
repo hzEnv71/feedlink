@@ -9,15 +9,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// MessageHandler 负责私信域 HTTP 入口：发送消息、会话列表、会话详情。
 type MessageHandler struct {
 	messageService *services.MessageService
 }
 
-func NewMessageHandler() *MessageHandler {
-	return &MessageHandler{messageService: services.NewMessageService()}
+func NewMessageHandler(messageService *services.MessageService) *MessageHandler {
+	return &MessageHandler{messageService: messageService}
 }
 
-// SendMessage 发送私信
+// SendMessage 发送私信。
+// 约束：必须登录、目标用户有效、内容非空。
 // POST /api/messages
 func (h *MessageHandler) SendMessage(c *gin.Context) {
 	currentUserID := middleware.GetCurrentUserID(c)

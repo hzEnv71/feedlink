@@ -4,10 +4,15 @@ import (
 	"feed/config"
 	"feed/handlers"
 	"feed/middleware"
+	"feed/services"
 
 	"github.com/gin-gonic/gin"
 )
 
+// SetupRouter 组装路由、服务依赖与中间件。
+// 约定：
+// - 先初始化 service，再注入 handler；
+// - 受保护路由统一挂载 AuthMiddleware。
 func SetupRouter() *gin.Engine {
 	if config.AppConfig.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -21,14 +26,23 @@ func SetupRouter() *gin.Engine {
 	// 上传静态文件访问
 	r.Static("/uploads", config.AppConfig.Upload.Path)
 
+	// 初始化Service
+	userService := services.NewUserService()
+	followService := services.NewFollowService()
+	feedService := services.NewFeedService()
+	messageService := services.NewMessageService()
+
 	// 初始化Handler
-	userHandler := handlers.NewUserHandler()
-	followHandler := handlers.NewFollowHandler()
-	feedHandler := handlers.NewFeedHandler()
+	userHandler := handlers.NewUserHandler(userService)
+	followHandler := handlers.NewFollowHandler(followService)
+	feedHandler := handlers.NewFeedHandler(feedService)
 	uploadHandler := handlers.NewUploadHandler()
-	messageHandler := handlers.NewMessageHandler()
+	messageHandler := handlers.NewMessageHandler(messageService)
+	wsHandler := handlers.NewWSHandler()
 
 	// API路由组
+	r.GET("/ws/messages", wsHandler.MessageWS)
+
 	api := r.Group("/api")
 	{
 		// ==================== 认证相关（无需登录） ====================
@@ -45,7 +59,7 @@ func SetupRouter() *gin.Engine {
 			// 用户相关
 			authenticated.GET("/users/me", userHandler.GetCurrentUser)
 			authenticated.PUT("/users/me", userHandler.UpdateProfile)
-			authenticated.GET("/users/me/visitors", userHandler.GetRecentVisitors)
+			authenticated.GET("/users/me/visits", userHandler.GetRecentVisits)
 			authenticated.GET("/users/search", userHandler.SearchUsers)
 			authenticated.GET("/users/:id", userHandler.GetProfile)
 
@@ -63,6 +77,7 @@ func SetupRouter() *gin.Engine {
 			authenticated.POST("/feeds", feedHandler.PublishFeed)
 			authenticated.POST("/feeds/repost", feedHandler.RepostFeed)
 			authenticated.DELETE("/feeds/:id", feedHandler.DeleteFeed)
+			authenticated.GET("/feeds/search", feedHandler.SearchFeeds)
 			authenticated.GET("/feeds/:id", feedHandler.GetFeed)
 			authenticated.GET("/users/:id/feeds", feedHandler.GetUserFeeds)
 

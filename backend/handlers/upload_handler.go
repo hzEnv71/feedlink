@@ -13,8 +13,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// UploadHandler 负责媒体文件上传（图片/视频）。
+// 说明：
+// - 仅处理基础校验与落盘；
+// - 业务侧只保存返回的 URL，不直接感知存储细节。
 type UploadHandler struct{}
 
+// NewUploadHandler 构建 UploadHandler。
 func NewUploadHandler() *UploadHandler {
 	return &UploadHandler{}
 }

@@ -6,6 +6,11 @@ import (
 	"github.com/spf13/viper"
 )
 
+const (
+	defaultConfigName = "config"
+	defaultConfigType = "yaml"
+)
+
 type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
@@ -41,14 +46,19 @@ type RedisConfig struct {
 }
 
 type RabbitMQConfig struct {
-	Host      string `mapstructure:"host"`
-	Port      int    `mapstructure:"port"`
-	Username  string `mapstructure:"username"`
-	Password  string `mapstructure:"password"`
-	VHost     string `mapstructure:"vhost"`
-	Queue     string `mapstructure:"queue"`
-	Prefetch  int    `mapstructure:"prefetch"`
-	Consumers int    `mapstructure:"consumers"`
+	Host             string `mapstructure:"host"`
+	Port             int    `mapstructure:"port"`
+	Username         string `mapstructure:"username"`
+	Password         string `mapstructure:"password"`
+	VHost            string `mapstructure:"vhost"`
+	Queue            string `mapstructure:"queue"`
+	Prefetch         int    `mapstructure:"prefetch"`
+	Consumers        int    `mapstructure:"consumers"`
+	DeadLetterQueue  string `mapstructure:"dead_letter_queue"`
+	RetryQueue       string `mapstructure:"retry_queue"`
+	MaxRetries       int    `mapstructure:"max_retries"`
+	RetryDelayMS     int    `mapstructure:"retry_delay_ms"`
+	IdempotentTTLMin int    `mapstructure:"idempotent_ttl_min"`
 }
 
 type JWTConfig struct {
@@ -75,8 +85,8 @@ type UploadConfig struct {
 var AppConfig *Config
 
 func InitConfig() error {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
+	viper.SetConfigName(defaultConfigName)
+	viper.SetConfigType(defaultConfigType)
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("./config")
 
@@ -84,21 +94,50 @@ func InitConfig() error {
 		return fmt.Errorf("read config failed: %w", err)
 	}
 
-	AppConfig = &Config{}
-	if err := viper.Unmarshal(AppConfig); err != nil {
+	cfg := &Config{}
+	if err := viper.Unmarshal(cfg); err != nil {
 		return fmt.Errorf("unmarshal config failed: %w", err)
 	}
 
+	AppConfig = cfg
 	return nil
 }
 
 func (d *DatabaseConfig) DSN() string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=Local",
-		d.Username, d.Password, d.Host, d.Port, d.DBName, d.Charset)
+	return fmt.Sprintf(
+		"%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=Local",
+		d.Username,
+		d.Password,
+		d.Host,
+		d.Port,
+		d.DBName,
+		d.Charset,
+	)
 }
 
 func (r *RedisConfig) Addr() string {
 	return fmt.Sprintf("%s:%d", r.Host, r.Port)
+}
+
+func (r *RabbitMQConfig) QueueName() string {
+	if r.Queue == "" {
+		return "feed_queue"
+	}
+	return r.Queue
+}
+
+func (r *RabbitMQConfig) DeadLetterQueueName() string {
+	if r.DeadLetterQueue == "" {
+		return r.QueueName() + ".dlq"
+	}
+	return r.DeadLetterQueue
+}
+
+func (r *RabbitMQConfig) RetryQueueName() string {
+	if r.RetryQueue == "" {
+		return r.QueueName() + ".retry"
+	}
+	return r.RetryQueue
 }
 
 func (r *RabbitMQConfig) URL() string {

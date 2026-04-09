@@ -9,14 +9,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// UserHandler 负责用户域 HTTP 入口：注册、登录、资料查询与更新。
 type UserHandler struct {
 	userService *services.UserService
 }
 
-func NewUserHandler() *UserHandler {
-	return &UserHandler{
-		userService: &services.UserService{},
-	}
+func NewUserHandler(userService *services.UserService) *UserHandler {
+	return &UserHandler{userService: userService}
 }
 
 // Register 用户注册
@@ -83,7 +82,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		return
 	}
 
-	_ = h.userService.RecordProfileVisit(currentUserID, uint(userID))
+	_ = h.userService.RecordVisit(currentUserID, uint(userID))
 
 	utils.Success(c, profile)
 }
@@ -158,9 +157,9 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	utils.Success(c, user.ToResponse())
 }
 
-// GetRecentVisitors 获取最近访客
-// GET /api/users/me/visitors?page=1&page_size=20
-func (h *UserHandler) GetRecentVisitors(c *gin.Context) {
+// GetRecentVisits 获取最近访客
+// GET /api/users/me/visits?page=1&page_size=20
+func (h *UserHandler) GetRecentVisits(c *gin.Context) {
 	userID := middleware.GetCurrentUserID(c)
 	if userID == 0 {
 		utils.Unauthorized(c, "请先登录")
@@ -177,7 +176,7 @@ func (h *UserHandler) GetRecentVisitors(c *gin.Context) {
 		pageSize = 20
 	}
 
-	list, total, err := h.userService.GetRecentVisitors(userID, page, pageSize)
+	list, total, err := h.userService.GetRecentVisits(userID, page, pageSize)
 	if err != nil {
 		utils.Error(c, 500, "获取访客列表失败")
 		return

@@ -6,7 +6,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// Feed类型常量
+// FeedType 常量定义。
+// 约定：仅通过常量判断动态类型，避免魔法值。
 const (
 	FeedTypeOriginal = 0 // 原创
 	FeedTypeRepost   = 1 // 转发
@@ -33,7 +34,10 @@ func (Feed) TableName() string {
 	return "feeds"
 }
 
-// FeedResponse Feed响应结构
+// FeedResponse 为对外返回的动态视图模型。
+// 说明：
+// - 与数据库实体 Feed 分离，便于扩展展示字段；
+// - OriginalFeed 用于转发场景展示引用内容。
 type FeedResponse struct {
 	ID           uint          `json:"id"`
 	UserID       uint          `json:"user_id"`

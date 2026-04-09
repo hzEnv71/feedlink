@@ -22,6 +22,7 @@ type PageResponse struct {
 	HasMore  bool        `json:"has_more"`
 }
 
+// Success 返回标准成功响应。
 func Success(c *gin.Context, data interface{}) {
 	c.JSON(http.StatusOK, Response{
 		Code:    0,
@@ -59,6 +60,7 @@ func Unauthorized(c *gin.Context, message string) {
 	})
 }
 
+// SuccessPage 返回标准分页响应，统一包含 has_more 字段。
 func SuccessPage(c *gin.Context, list interface{}, total int64, page, pageSize int) {
 	hasMore := int64(page*pageSize) < total
 	c.JSON(http.StatusOK, Response{

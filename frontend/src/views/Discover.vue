@@ -1,12 +1,12 @@
 <template>
-  <div class="discover-page">
-    <div class="card">
-      <h2 class="page-title">🔍 发现用户</h2>
+  <div class="discover-xhs">
+    <div class="discover-head card">
+      <div class="head-title">发现</div>
+      <div class="head-sub">搜索用户并浏览推荐卡片</div>
       <el-input
         v-model="keyword"
-        placeholder="搜索用户名或昵称"
+        placeholder="搜索昵称 / 用户名"
         size="large"
-        prefix-icon="Search"
         clearable
         @keyup.enter="searchUsers"
         @clear="clearSearch"
@@ -17,150 +17,213 @@
       </el-input>
     </div>
 
-    <!-- 搜索结果 -->
-    <div v-if="searched" class="mt-20">
-      <div v-if="users.length === 0" class="text-center">
-        <el-empty description="未找到相关用户" />
-      </div>
-
-      <div v-else class="user-grid">
-        <div v-for="user in users" :key="user.id" class="card user-card" @click="goToProfile(user.id)">
-          <div class="user-card-header">
-            <el-avatar :size="60">
-              {{ user.nickname?.charAt(0) || 'U' }}
-            </el-avatar>
-            <div class="user-card-info">
-              <div class="user-card-name">
-                {{ user.nickname }}
-                <el-tag v-if="user.is_big_v" size="small" type="warning" effect="plain">大V</el-tag>
-              </div>
-              <div class="user-card-username">@{{ user.username }}</div>
-              <div class="user-card-stats">
-                <span>{{ user.follower_count }} 粉丝</span>
-                <span>·</span>
-                <span>{{ user.follow_count }} 关注</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 分页 -->
-      <div v-if="total > pageSize" class="text-center mt-20">
-        <el-pagination
-          v-model:current-page="page"
-          :page-size="pageSize"
-          :total="total"
-          layout="prev, pager, next"
-          @current-change="searchUsers"
-        />
-      </div>
+    <div v-if="cards.length === 0" class="card empty-wrap">
+      <el-empty description="输入关键词开始探索" />
     </div>
 
-    <!-- 推荐用户（未搜索时显示） -->
-    <div v-else class="mt-20">
-      <div class="card">
-        <h3>💡 提示</h3>
-        <p style="color: #666; margin-top: 8px;">
-          搜索你感兴趣的用户，关注他们来获取最新动态。
-          Feed流系统采用推拉混合策略：
-        </p>
-        <ul style="color: #888; margin-top: 8px; padding-left: 20px; line-height: 2;">
-          <li><strong>普通用户</strong>发布动态时，系统会自动<el-tag size="small" type="success">推送</el-tag>到粉丝的收件箱</li>
-          <li><strong>大V用户</strong>（粉丝超过阈值）发布动态时，粉丝会实时<el-tag size="small" type="primary">拉取</el-tag>合并展示</li>
-          <li>这种混合策略兼顾了实时性和系统性能</li>
-        </ul>
-      </div>
+    <!-- 小红书风格瀑布流：双列卡片 -->
+    <div v-else class="waterfall">
+      <article
+        v-for="user in cards"
+        :key="user.id"
+        class="note-card"
+        @click="goToProfile(user.id)"
+      >
+        <div class="note-cover" :style="coverStyle(user)">
+          <el-avatar :size="64" :src="user.avatar || ''" class="note-avatar">
+            {{ user.nickname?.charAt(0) || 'U' }}
+          </el-avatar>
+        </div>
+
+        <div class="note-body">
+          <div class="note-title">
+            {{ user.nickname || user.username }}
+            <el-tag v-if="user.is_big_v" size="small" type="warning" effect="plain">大V</el-tag>
+          </div>
+          <div class="note-desc">@{{ user.username }}</div>
+          <div class="note-meta">
+            <span>{{ user.follower_count || 0 }} 粉丝</span>
+            <span>·</span>
+            <span>{{ user.follow_count || 0 }} 关注</span>
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <div v-if="searched && total > pageSize" class="pager-wrap">
+      <el-pagination
+        v-model:current-page="page"
+        :page-size="pageSize"
+        :total="total"
+        layout="prev, pager, next"
+        @current-change="searchUsers"
+      />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { userApi } from '../api'
 
 const router = useRouter()
+const route = useRoute()
 
 const keyword = ref('')
-const users = ref([])
+const cards = ref([])
 const searching = ref(false)
 const searched = ref(false)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
 
+onMounted(() => {
+  const q = String(route.query.keyword || '').trim()
+  if (q) {
+    keyword.value = q
+    searchUsers()
+  }
+})
+
 async function searchUsers() {
-  if (!keyword.value.trim()) return
+  const q = keyword.value.trim()
+  if (!q) return
+
   searching.value = true
   searched.value = true
   try {
-    const res = await userApi.searchUsers(keyword.value, page.value, pageSize)
-    users.value = res.data.list || []
-    total.value = res.data.total
-  } catch (e) {}
-  finally {
+    const res = await userApi.searchUsers(q, page.value, pageSize)
+    cards.value = res.data.list || []
+    total.value = res.data.total || 0
+  } catch (e) {
+    // handled by interceptor
+  } finally {
     searching.value = false
   }
 }
 
 function clearSearch() {
   searched.value = false
-  users.value = []
+  cards.value = []
   page.value = 1
+  total.value = 0
 }
 
 function goToProfile(userId) {
   router.push(`/profile/${userId}`)
 }
+
+function coverStyle(user) {
+  // 使用稳定“伪随机”高度与渐变，让卡片更接近笔记流视觉。
+  const seed = Number(user.id || 1)
+  const h = 140 + (seed % 4) * 28
+  const palette = [
+    'linear-gradient(135deg,#ffe4ec,#ffd9d9)',
+    'linear-gradient(135deg,#e4f3ff,#d7e6ff)',
+    'linear-gradient(135deg,#e9ffe8,#d8f8d7)',
+    'linear-gradient(135deg,#fff3dd,#ffe5c2)',
+  ]
+  return {
+    height: `${h}px`,
+    background: palette[seed % palette.length],
+  }
+}
 </script>
 
 <style scoped>
-.page-title {
-  margin-bottom: 16px;
-  font-size: 20px;
+.discover-xhs {
+  min-width: 0;
 }
 
-.user-grid {
-  display: grid;
-  gap: 12px;
+.discover-head {
+  border-radius: 14px;
+  margin-bottom: 14px;
 }
 
-.user-card {
+.head-title {
+  font-size: 24px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.head-sub {
+  font-size: 13px;
+  color: #8a93a5;
+  margin-bottom: 12px;
+}
+
+.waterfall {
+  column-count: 2;
+  column-gap: 14px;
+}
+
+.note-card {
+  break-inside: avoid;
+  background: #fff;
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 14px;
   cursor: pointer;
-  transition: all 0.2s;
+  box-shadow: 0 2px 10px rgba(25, 35, 56, 0.08);
+  transition: transform .2s ease, box-shadow .2s ease;
 }
 
-.user-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transform: translateY(-1px);
+.note-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(25, 35, 56, 0.14);
 }
 
-.user-card-header {
-  display: flex;
-  gap: 16px;
-  align-items: center;
+.note-cover {
+  width: 100%;
+  display: grid;
+  place-items: center;
 }
 
-.user-card-name {
-  font-size: 16px;
-  font-weight: 600;
-  display: flex;
+.note-avatar {
+  border: 3px solid rgba(255, 255, 255, 0.75);
+}
+
+.note-body {
+  padding: 10px 12px 12px;
+}
+
+.note-title {
+  font-size: 15px;
+  font-weight: 700;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.user-card-username {
-  color: #999;
-  font-size: 13px;
-  margin-top: 2px;
+.note-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8b94a7;
 }
 
-.user-card-stats {
+.note-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #6f788a;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.empty-wrap {
+  border-radius: 14px;
+}
+
+.pager-wrap {
+  margin-top: 10px;
   display: flex;
-  gap: 8px;
-  color: #666;
-  font-size: 13px;
-  margin-top: 6px;
+  justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .waterfall {
+    column-count: 1;
+  }
 }
 </style>

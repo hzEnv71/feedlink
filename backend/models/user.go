@@ -1,3 +1,4 @@
+// Package models 定义数据库实体与对外响应结构。
 package models
 
 import (

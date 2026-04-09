@@ -16,7 +16,10 @@
           <div class="conversation-meta">
             <div class="top-row">
               <span class="name">{{ item.user?.nickname || '用户' }}</span>
-              <span class="time">{{ formatTime(item.last_time) }}</span>
+              <div class="right-meta">
+                <span class="time">{{ formatTime(item.last_time) }}</span>
+                <el-badge v-if="item.unread > 0" :value="item.unread" class="unread-badge" />
+              </div>
             </div>
             <div class="last-msg">{{ item.last_msg || '暂无消息' }}</div>
           </div>
@@ -68,7 +71,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { messageApi } from '../api'
 import { ElMessage } from 'element-plus'
@@ -85,6 +88,7 @@ const messages = ref([])
 const inputContent = ref('')
 const sending = ref(false)
 const chatListRef = ref(null)
+let ws = null
 
 const currentUser = computed(() => JSON.parse(sessionStorage.getItem('user') || 'null'))
 
@@ -92,6 +96,7 @@ const currentUserId = computed(() => currentUser.value?.id || 0)
 
 onMounted(async () => {
   await loadConversations()
+  connectWS()
 
   const target = Number(route.query.target || 0)
   if (target) {
@@ -99,6 +104,13 @@ onMounted(async () => {
     const userName = route.query.name ? String(route.query.name) : '私信'
     selectedUserName.value = userName
     await loadMessages(target)
+  }
+})
+
+onUnmounted(() => {
+  if (ws) {
+    ws.close()
+    ws = null
   }
 })
 
@@ -150,6 +162,27 @@ async function send() {
     ElMessage.error('发送失败')
   } finally {
     sending.value = false
+  }
+}
+
+// connectWS 建立消息实时通道：收到新消息后刷新会话，当前会话则刷新消息列表。
+function connectWS() {
+  const token = sessionStorage.getItem('token')
+  if (!token) return
+  ws = messageApi.connectMessageWS(token)
+  ws.onmessage = async (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      if (payload?.type === 'message:new') {
+        await loadConversations()
+        const targetId = payload?.data?.from_user_id
+        if (targetId && Number(targetId) === Number(selectedTargetId.value)) {
+          await loadMessages(selectedTargetId.value)
+        }
+      }
+    } catch (e) {
+      // ignore parse error
+    }
   }
 }
 
@@ -230,12 +263,18 @@ function formatTime(timeStr) {
 .top-row {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 8px;
 }
 
 .name {
   font-size: 14px;
   font-weight: 600;
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .time {
@@ -250,6 +289,17 @@ function formatTime(timeStr) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.right-meta {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.unread-badge {
+  margin-top: 0;
 }
 
 .messages-main {

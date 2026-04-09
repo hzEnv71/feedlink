@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// DB 为全局数据库连接句柄（进程级单例）。
 var DB *gorm.DB
 
 func InitDB() error {
@@ -47,7 +48,7 @@ func InitDB() error {
 		&Timeline{},
 		&Like{},
 		&Comment{},
-		&ProfileVisit{},
+		&Visit{},
 		&Message{},
 	)
 	if err != nil {

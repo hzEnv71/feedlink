@@ -3,11 +3,17 @@ package services
 import (
 	"errors"
 	"feed/models"
+	"feed/realtime"
+	"feed/repository"
 	"strings"
 	"time"
 )
 
-type MessageService struct{}
+// MessageService 负责私信会话与消息读写流程。
+type MessageService struct {
+	messageRepo repository.MessageRepository
+	userRepo    repository.UserRepository
+}
 
 type SendMessageRequest struct {
 	ToUserID uint   `json:"to_user_id" binding:"required"`
@@ -24,9 +30,13 @@ type ConversationItem struct {
 }
 
 func NewMessageService() *MessageService {
-	return &MessageService{}
+	return &MessageService{
+		messageRepo: repository.NewMessageRepository(models.DB),
+		userRepo:    repository.NewUserRepository(models.DB),
+	}
 }
 
+// SendMessage 发送私信：校验收发双方与内容后写入消息表。
 func (s *MessageService) SendMessage(fromUserID uint, req *SendMessageRequest) (*models.Message, error) {
 	if fromUserID == 0 {
 		return nil, errors.New("请先登录")
@@ -40,8 +50,7 @@ func (s *MessageService) SendMessage(fromUserID uint, req *SendMessageRequest) (
 		return nil, errors.New("消息内容不能为空")
 	}
 
-	var target models.User
-	if err := models.DB.Where("id = ?", req.ToUserID).First(&target).Error; err != nil {
+	if _, err := s.userRepo.GetByID(req.ToUserID); err != nil {
 		return nil, errors.New("接收方用户不存在")
 	}
 
@@ -51,35 +60,30 @@ func (s *MessageService) SendMessage(fromUserID uint, req *SendMessageRequest) (
 		Content:    content,
 		CreatedAt:  time.Now(),
 	}
-	if err := models.DB.Create(msg).Error; err != nil {
+	if err := s.messageRepo.Create(msg); err != nil {
 		return nil, errors.New("发送失败")
 	}
+
+	// 实时推送：对方在线时立即收到新消息事件。
+	realtime.PushToUser(req.ToUserID, realtime.MessageEvent{
+		Type: "message:new",
+		Data: msg,
+	})
 
 	return msg, nil
 }
 
+// GetConversationMessages 获取会话消息，并将“对方->当前用户”的未读消息标记为已读。
 func (s *MessageService) GetConversationMessages(currentUserID, targetUserID uint, page, pageSize int) ([]models.Message, int64, error) {
 	if currentUserID == 0 || targetUserID == 0 {
 		return nil, 0, errors.New("参数错误")
 	}
-
-	var messages []models.Message
-	var total int64
-
-	query := models.DB.Model(&models.Message{}).
-		Where("(from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)",
-			currentUserID, targetUserID, targetUserID, currentUserID)
-
-	if err := query.Count(&total).Error; err != nil {
+	list, total, err := s.messageRepo.GetByConversation(currentUserID, targetUserID, page, pageSize)
+	if err != nil {
 		return nil, 0, err
 	}
-
-	offset := (page - 1) * pageSize
-	if err := query.Preload("FromUser").Preload("ToUser").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&messages).Error; err != nil {
-		return nil, 0, err
-	}
-
-	return messages, total, nil
+	_ = s.messageRepo.MarkReadFromTo(targetUserID, currentUserID)
+	return list, total, nil
 }
 
 func (s *MessageService) GetConversationList(currentUserID uint, page, pageSize int) ([]ConversationItem, int64, error) {
@@ -87,12 +91,8 @@ func (s *MessageService) GetConversationList(currentUserID uint, page, pageSize 
 		return nil, 0, errors.New("请先登录")
 	}
 
-	var messages []models.Message
-	if err := models.DB.Where("from_user_id = ? OR to_user_id = ?", currentUserID, currentUserID).
-		Order("created_at DESC").
-		Preload("FromUser").
-		Preload("ToUser").
-		Find(&messages).Error; err != nil {
+	messages, err := s.messageRepo.ListByUser(currentUserID)
+	if err != nil {
 		return nil, 0, err
 	}
 
@@ -109,11 +109,12 @@ func (s *MessageService) GetConversationList(currentUserID uint, page, pageSize 
 			continue
 		}
 
+		unread, _ := s.messageRepo.CountUnreadFromTo(targetID, currentUserID)
 		conversationMap[targetID] = ConversationItem{
 			User:       targetUser.ToResponse(),
 			LastMsg:    msg.Content,
 			LastTime:   msg.CreatedAt.Format(time.RFC3339),
-			Unread:     0,
+			Unread:     unread,
 			TargetID:   targetID,
 			TargetName: targetUser.Nickname,
 		}

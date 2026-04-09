@@ -1,70 +1,115 @@
 <template>
-  <div class="layout">
-    <!-- 顶部导航栏 -->
-    <el-header class="header">
-      <div class="header-content">
-        <div class="logo" @click="router.push('/')">
-          Feed
-        </div>
-        <div class="nav-links">
-          <el-button text @click="router.push('/')">
-            <el-icon><Connection /></el-icon>
-            动态
-          </el-button>
-          <el-button text @click="router.push('/discover')">
-            <el-icon><Search /></el-icon>
-            发现
-          </el-button>
-          <el-button text @click="router.push('/messages')">
-            <el-icon><ChatLineRound /></el-icon>
-            消息
-          </el-button>
-        </div>
-        <div class="user-info">
-          <el-dropdown @command="handleCommand">
-            <span class="user-dropdown">
-              <el-avatar :size="32" :src="userStore.userInfo?.avatar || ''">
-                {{ userStore.userInfo?.nickname?.charAt(0) || 'U' }}
-              </el-avatar>
-              <span class="username">{{ userStore.userInfo?.nickname }}</span>
-              <el-icon><ArrowDown /></el-icon>
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="profile">
-                  <el-icon><User /></el-icon>
-                  我的主页
-                </el-dropdown-item>
-                <el-dropdown-item command="logout" divided>
-                  <el-icon><SwitchButton /></el-icon>
-                  退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </div>
-      </div>
-    </el-header>
+  <div class="layout-xhs">
+    <!-- 左侧导航 -->
+    <aside class="side-nav card">
+      <div class="brand" @click="router.push('/')">Feed</div>
 
-    <!-- 主内容区 -->
-    <el-main class="main">
-      <router-view />
-    </el-main>
+      <button class="nav-item" :class="{ active: isActive('/timeline') }" @click="router.push('/timeline')">
+        <el-icon><Connection /></el-icon>
+        <span>动态</span>
+      </button>
+
+      <button class="nav-item" :class="{ active: isActive('/publish') }" @click="router.push('/publish')">
+        <el-icon><Plus /></el-icon>
+        <span>发布</span>
+      </button>
+
+      <button class="nav-item" :class="{ active: isActive('/messages') }" @click="router.push('/messages')">
+        <el-icon><ChatLineRound /></el-icon>
+        <span>消息</span>
+      </button>
+
+      <button class="nav-item" :class="{ active: route.path.startsWith('/profile') }" @click="router.push(`/profile/${userStore.userInfo?.id}`)">
+        <el-icon><User /></el-icon>
+        <span>我</span>
+      </button>
+
+      <div class="side-bottom">
+        <el-dropdown trigger="click" @command="handleSettingCommand" popper-class="setting-dropdown settings-popper" @visible-change="syncSettingsMenuWidth">
+          <button ref="settingsTriggerRef" class="nav-item setting-item">
+            <el-icon><Setting /></el-icon>
+            <span>设置</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu class="settings-menu" :style="{ width: `${settingsMenuWidth}px` }">
+              <el-dropdown-item command="logout" class="settings-row">
+                <span class="settings-left">
+                  <el-icon><SwitchButton /></el-icon>
+                  <span>退出登录</span>
+                </span>
+              </el-dropdown-item>
+              <el-dropdown-item class="settings-row dark-mode-item" @click.stop>
+                <span class="settings-left">
+                  <el-icon><Setting /></el-icon>
+                  <span>深色模式</span>
+                </span>
+                <el-switch v-model="isDarkMode" @change="toggleDarkMode" />
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </aside>
+
+    <main class="content-wrap">
+      <!-- 顶部全局搜索栏（小红书风格） -->
+      <header class="top-bar">
+        <div class="global-search">
+          <el-icon class="search-icon"><Search /></el-icon>
+          <input
+            v-model="searchKeyword"
+            class="search-input"
+            type="text"
+            placeholder="搜索用户、动态"
+            @keyup.enter="goDiscoverSearch"
+          />
+          <button class="search-action" type="button" @click="goDiscoverSearch">搜索</button>
+        </div>
+      </header>
+
+      <section class="router-section">
+        <router-view />
+      </section>
+    </main>
   </div>
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
+import { computed, ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { ElMessageBox } from 'element-plus'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
+const searchKeyword = ref('')
+const isDarkMode = ref(false)
+const settingsTriggerRef = ref(null)
+const settingsMenuWidth = ref(220)
 
-function handleCommand(command) {
-  if (command === 'profile') {
-    router.push(`/profile/${userStore.userInfo?.id}`)
-  } else if (command === 'logout') {
+const isActive = (path) => computed(() => route.path === path).value
+
+function applyDarkMode(enabled) {
+  document.body.classList.toggle('dark', enabled)
+  localStorage.setItem('theme', enabled ? 'dark' : 'light')
+}
+
+function toggleDarkMode(value) {
+  applyDarkMode(value)
+}
+
+function goDiscoverSearch() {
+  const keyword = searchKeyword.value.trim()
+  if (!keyword) {
+    router.push('/search_result')
+    return
+  }
+  router.push({ path: '/search_result', query: { keyword, type: 'users' } })
+}
+
+function handleSettingCommand(command) {
+  if (command === 'logout') {
     ElMessageBox.confirm('确定退出登录吗？', '提示', {
       confirmButtonText: '确定',
       cancelButtonText: '取消',
@@ -75,68 +120,222 @@ function handleCommand(command) {
     }).catch(() => {})
   }
 }
+
+function syncSettingsMenuWidth() {
+  const triggerEl = settingsTriggerRef.value
+  if (!triggerEl) return
+  settingsMenuWidth.value = Math.max(180, Math.round(triggerEl.getBoundingClientRect().width))
+}
+
+onMounted(() => {
+  const savedTheme = localStorage.getItem('theme')
+  const shouldUseDark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
+  isDarkMode.value = shouldUseDark
+  applyDarkMode(shouldUseDark)
+  syncSettingsMenuWidth()
+})
 </script>
 
 <style scoped>
-.layout {
+.layout-xhs {
   min-height: 100vh;
-  background-color: #f5f7fa;
+  background: var(--layout-bg);
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px;
 }
 
-.header {
+.side-nav {
+  position: sticky;
+  top: 16px;
+  height: calc(100vh - 32px);
+  padding: 18px 12px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  font-size: 24px;
+  font-weight: 800;
+  padding: 8px 10px 16px;
+  cursor: pointer;
+}
+
+.nav-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  color: var(--text-color);
+  font-size: 15px;
+  text-align: left;
+}
+
+.nav-item:hover {
+  background: var(--nav-hover-bg);
+}
+
+.nav-item.active {
+  background: #111;
+  color: #fff;
+}
+
+.side-bottom {
+  margin-top: auto;
+}
+
+.side-bottom :deep(.el-dropdown) {
+  display: block;
+  width: 100%;
+}
+
+.side-bottom :deep(.el-dropdown-link) {
+  display: block;
+  width: 100%;
+}
+
+.setting-item {
+  margin-bottom: 0;
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.content-wrap {
+  min-width: 0;
+}
+
+.top-bar {
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: center;
+}
+
+/* 小红书风格：白底圆角胶囊搜索条 */
+.global-search {
+  width: min(640px, 100%);
+  height: 46px;
   background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 100;
-  height: 60px;
-  padding: 0;
+  border: 1px solid #eceff3;
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(24, 32, 56, 0.06);
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 14px;
 }
 
-.header-content {
-  max-width: 1200px;
-  margin: 0 auto;
+.search-icon {
+  color: #9aa3b5;
+  font-size: 16px;
+}
+
+.search-input {
+  border: 0;
+  outline: none;
   height: 100%;
+  font-size: 14px;
+  color: #222;
+  background: transparent;
+}
+
+.search-input::placeholder {
+  color: #9aa3b5;
+}
+
+.search-action {
+  border: 0;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: #111;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.search-action:hover {
+  background: #222;
+}
+
+.router-section {
+  min-width: 0;
+}
+
+:deep(.settings-popper .el-dropdown-menu) {
+  min-width: 180px;
+  padding: 6px;
+}
+
+:deep(.settings-popper .el-dropdown-menu__item.settings-row) {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
+  gap: 12px;
+  min-height: 40px;
+  border-radius: 8px;
+  padding: 0 12px;
 }
 
-.logo {
-  font-size: 20px;
-  font-weight: bold;
-  color: #667eea;
-  cursor: pointer;
-}
-
-.nav-links {
-  display: flex;
-  gap: 8px;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-}
-
-.user-dropdown {
-  display: flex;
+:deep(.settings-popper .settings-left) {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
-  color: #333;
+  color: var(--text-color);
+  flex: 1;
+  min-width: 0;
 }
 
-.username {
-  font-size: 14px;
+:deep(.settings-popper .settings-left .el-icon) {
+  font-size: 15px;
 }
 
-.main {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 80px 20px 20px;
+:deep(.settings-popper .dark-mode-item .el-switch) {
+  margin-left: auto;
+}
+
+@media (max-width: 960px) {
+  .layout-xhs {
+    grid-template-columns: 1fr;
+  }
+
+  .side-nav {
+    position: static;
+    height: auto;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+
+  .side-bottom {
+    margin-top: 0;
+  }
+
+  .brand {
+    grid-column: 1 / -1;
+    padding-bottom: 8px;
+  }
+
+  .nav-item {
+    justify-content: center;
+  }
+
+  .setting-item {
+    justify-content: center;
+  }
+
+  .global-search {
+    width: 100%;
+  }
 }
 </style>

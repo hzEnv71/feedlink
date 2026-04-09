@@ -5,14 +5,26 @@ import (
 	"feed/cache"
 	"feed/config"
 	"feed/models"
+	"feed/repository"
 	"feed/utils"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
-type UserService struct{}
+// UserService 负责用户域业务编排。
+// 说明：
+// - 认证、资料、搜索、访客等业务规则在此层实现；
+// - 底层数据访问通过 UserRepository 完成。
+type UserService struct {
+	userRepo repository.UserRepository
+}
+
+func NewUserService() *UserService {
+	return &UserService{userRepo: repository.NewUserRepository(models.DB)}
+}
 
 // RegisterRequest 注册请求
 type RegisterRequest struct {
@@ -35,20 +47,27 @@ type LoginResponse struct {
 
 // UpdateProfileRequest 更新个人资料请求
 type UpdateProfileRequest struct {
-	Avatar *string `json:"avatar" binding:"omitempty,max=500"`
-	Bio    *string `json:"bio" binding:"omitempty,max=500"`
+	Avatar   *string `json:"avatar" binding:"omitempty,max=500"`
+	Bio      *string `json:"bio" binding:"omitempty,max=500"`
+	Nickname *string `json:"nickname" binding:"omitempty,min=1,max=100"`
+}
+
+type VisitResponse struct {
+	ID        uint                `json:"id"`
+	VisitedAt string              `json:"visited_at"`
+	Visitor   models.UserResponse `json:"visitor"`
 }
 
 // Register 用户注册
 func (s *UserService) Register(req *RegisterRequest) (*models.User, error) {
-	// 检查用户名是否已存在
-	var count int64
-	models.DB.Model(&models.User{}).Where("username = ?", req.Username).Count(&count)
+	count, err := s.userRepo.CountByUsername(req.Username)
+	if err != nil {
+		return nil, errors.New("查询用户失败")
+	}
 	if count > 0 {
 		return nil, errors.New("用户名已存在")
 	}
 
-	// 加密密码
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, errors.New("密码加密失败")
@@ -60,7 +79,7 @@ func (s *UserService) Register(req *RegisterRequest) (*models.User, error) {
 		Nickname: req.Nickname,
 	}
 
-	if err := models.DB.Create(user).Error; err != nil {
+	if err := s.userRepo.Create(user); err != nil {
 		return nil, errors.New("注册失败")
 	}
 
@@ -69,41 +88,36 @@ func (s *UserService) Register(req *RegisterRequest) (*models.User, error) {
 
 // Login 用户登录
 func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
-	var user models.User
-	if err := models.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
+	user, err := s.userRepo.GetByUsername(req.Username)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("用户不存在")
 		}
 		return nil, errors.New("查询用户失败")
 	}
 
-	// 验证密码
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		return nil, errors.New("密码错误")
 	}
 
-	// 生成Token
 	token, err := utils.GenerateToken(user.ID, user.Username)
 	if err != nil {
 		return nil, errors.New("生成Token失败")
 	}
 
-	return &LoginResponse{
-		Token: token,
-		User:  user.ToResponse(),
-	}, nil
+	return &LoginResponse{Token: token, User: user.ToResponse()}, nil
 }
 
 // GetUserByID 根据ID获取用户
 func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
-	var user models.User
-	if err := models.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("用户不存在")
 		}
 		return nil, err
 	}
-	return &user, nil
+	return user, nil
 }
 
 // GetUserProfile 获取用户资料（含是否关注状态）
@@ -115,16 +129,10 @@ func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.
 
 	resp := user.ToResponse()
 
-	// 检查当前用户是否关注了目标用户
 	if currentUserID > 0 && currentUserID != targetUserID {
 		isFollowed, _ := cache.IsFollowing(currentUserID, targetUserID)
 		if !isFollowed {
-			// Redis没有数据，从数据库查询
-			var count int64
-			models.DB.Model(&models.Follow{}).
-				Where("user_id = ? AND followed_id = ?", currentUserID, targetUserID).
-				Count(&count)
-			isFollowed = count > 0
+			isFollowed, _ = s.userRepo.IsFollowing(currentUserID, targetUserID)
 		}
 		resp.IsFollowed = isFollowed
 	}
@@ -134,8 +142,8 @@ func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.
 
 // UpdateBigVStatus 更新用户大V状态
 func (s *UserService) UpdateBigVStatus(userID uint) error {
-	var user models.User
-	if err := models.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
 		return err
 	}
 
@@ -143,7 +151,9 @@ func (s *UserService) UpdateBigVStatus(userID uint) error {
 	isBigV := user.FollowerCount >= threshold
 
 	if user.IsBigV != isBigV {
-		models.DB.Model(&user).Update("is_big_v", isBigV)
+		if err := s.userRepo.UpdateBigV(userID, isBigV); err != nil {
+			return err
+		}
 		cache.SetBigV(userID, isBigV)
 		cache.DeleteUserCache(userID)
 	}
@@ -151,105 +161,64 @@ func (s *UserService) UpdateBigVStatus(userID uint) error {
 	return nil
 }
 
-type ProfileVisitResponse struct {
-	ID        uint                `json:"id"`
-	VisitedAt string              `json:"visited_at"`
-	Visitor   models.UserResponse `json:"visitor"`
-}
-
 // SearchUsers 搜索用户
 func (s *UserService) SearchUsers(keyword string, page, pageSize int) ([]models.UserResponse, int64, error) {
-	var users []models.User
-	var total int64
-
-	query := models.DB.Model(&models.User{}).Where("username LIKE ? OR nickname LIKE ?",
-		"%"+keyword+"%", "%"+keyword+"%")
-
-	query.Count(&total)
-
-	offset := (page - 1) * pageSize
-	if err := query.Offset(offset).Limit(pageSize).Find(&users).Error; err != nil {
+	users, total, err := s.userRepo.Search(keyword, page, pageSize)
+	if err != nil {
 		return nil, 0, err
 	}
 
-	var responses []models.UserResponse
+	responses := make([]models.UserResponse, 0, len(users))
 	for _, user := range users {
 		responses = append(responses, user.ToResponse())
 	}
-
 	return responses, total, nil
 }
 
 // UpdateProfile 更新个人资料
 func (s *UserService) UpdateProfile(userID uint, req *UpdateProfileRequest) (*models.User, error) {
-	user, err := s.GetUserByID(userID)
-	if err != nil {
-		return nil, err
+	if req.Nickname != nil {
+		nickname := strings.TrimSpace(*req.Nickname)
+		if nickname == "" {
+			return nil, errors.New("昵称不能为空")
+		}
+		req.Nickname = &nickname
 	}
 
-	updates := map[string]any{}
-	if req.Avatar != nil {
-		updates["avatar"] = *req.Avatar
-	}
 	if req.Bio != nil {
-		updates["bio"] = *req.Bio
+		bio := strings.TrimSpace(*req.Bio)
+		req.Bio = &bio
 	}
 
-	if len(updates) == 0 {
-		return user, nil
-	}
-
-	if err := models.DB.Model(user).Updates(updates).Error; err != nil {
+	user, err := s.userRepo.UpdateProfile(userID, req.Avatar, req.Bio, req.Nickname)
+	if err != nil {
 		return nil, errors.New("更新个人资料失败")
 	}
-
-	if err := models.DB.Where("id = ?", userID).First(user).Error; err != nil {
-		return nil, errors.New("获取更新后的用户信息失败")
-	}
-
 	return user, nil
 }
 
-// RecordProfileVisit 记录主页访问
-func (s *UserService) RecordProfileVisit(visitorID, targetUserID uint) error {
+// RecordVisit 记录主页访问
+func (s *UserService) RecordVisit(visitorID, targetUserID uint) error {
 	if visitorID == 0 || targetUserID == 0 || visitorID == targetUserID {
 		return nil
 	}
-
-	visit := models.ProfileVisit{
-		VisitorID:    visitorID,
-		TargetUserID: targetUserID,
-		VisitedAt:    time.Now(),
-	}
-
-	return models.DB.Where("visitor_id = ? AND target_user_id = ?", visitorID, targetUserID).
-		Assign(models.ProfileVisit{VisitedAt: visit.VisitedAt}).
-		FirstOrCreate(&visit).Error
+	return s.userRepo.UpsertVisit(visitorID, targetUserID, time.Now())
 }
 
-// GetRecentVisitors 获取最近访客
-func (s *UserService) GetRecentVisitors(targetUserID uint, page, pageSize int) ([]ProfileVisitResponse, int64, error) {
-	var visits []models.ProfileVisit
-	var total int64
-
-	query := models.DB.Model(&models.ProfileVisit{}).Where("target_user_id = ?", targetUserID)
-	if err := query.Count(&total).Error; err != nil {
+// GetRecentVisits 获取最近访问记录
+func (s *UserService) GetRecentVisits(targetUserID uint, page, pageSize int) ([]VisitResponse, int64, error) {
+	visits, total, err := s.userRepo.ListRecentVisits(targetUserID, page, pageSize)
+	if err != nil {
 		return nil, 0, err
 	}
 
-	offset := (page - 1) * pageSize
-	if err := query.Preload("Visitor").Order("visited_at DESC").Offset(offset).Limit(pageSize).Find(&visits).Error; err != nil {
-		return nil, 0, err
-	}
-
-	result := make([]ProfileVisitResponse, 0, len(visits))
+	result := make([]VisitResponse, 0, len(visits))
 	for _, v := range visits {
-		result = append(result, ProfileVisitResponse{
+		result = append(result, VisitResponse{
 			ID:        v.ID,
 			VisitedAt: v.VisitedAt.Format(time.RFC3339),
 			Visitor:   v.Visitor.ToResponse(),
 		})
 	}
-
 	return result, total, nil
 }
