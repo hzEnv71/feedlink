@@ -50,6 +50,7 @@ func InitDB() error {
 		&Comment{},
 		&Visit{},
 		&Message{},
+		&Notification{},
 	)
 	if err != nil {
 		return fmt.Errorf("auto migrate failed: %w", err)

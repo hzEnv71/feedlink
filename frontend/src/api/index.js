@@ -112,6 +112,15 @@ export const feedApi = {
 }
 
 // ==================== 消息相关 ====================
+export const notificationApi = {
+    getNotifications(page = 1, pageSize = 20) {
+        return request.get('/notifications', { params: { page, page_size: pageSize } })
+    },
+    markAllRead() {
+        return request.post('/notifications/read-all')
+    },
+}
+
 export const messageApi = {
     sendMessage(toUserId, content) {
         return request.post('/messages', { to_user_id: toUserId, content })

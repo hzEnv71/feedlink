@@ -49,6 +49,11 @@ const routes = [
                 component: () => import('../views/Messages.vue'),
             },
             {
+                path: 'notifications',
+                name: 'Notifications',
+                component: () => import('../views/Notifications.vue'),
+            },
+            {
                 path: 'search_result',
                 name: 'SearchResult',
                 component: () => import('../views/SearchResult.vue'),

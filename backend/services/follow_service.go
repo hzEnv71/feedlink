@@ -12,14 +12,16 @@ import (
 // FollowService 负责关注关系域业务编排。
 // 包含：关注、取关、列表查询，以及收件箱回填/清理等副作用流程。
 type FollowService struct {
-	followRepo  repository.FollowRepository
-	userService *UserService
+	followRepo           repository.FollowRepository
+	userService          *UserService
+	notificationService  *NotificationService
 }
 
 func NewFollowService() *FollowService {
 	return &FollowService{
-		followRepo:  repository.NewFollowRepository(models.DB),
-		userService: NewUserService(),
+		followRepo:          repository.NewFollowRepository(models.DB),
+		userService:         NewUserService(),
+		notificationService: NewNotificationService(),
 	}
 }
 
@@ -76,6 +78,7 @@ func (s *FollowService) Follow(userID, followedID uint) error {
 	cache.DeleteUserCache(followedID)
 
 	s.userService.UpdateBigVStatus(followedID)
+	s.notificationService.CreateFollowNotification(userID, followedID)
 	go s.backfillInbox(userID, followedID)
 
 	return nil

@@ -19,6 +19,12 @@
         <span>消息</span>
       </button>
 
+      <button class="nav-item" :class="{ active: isActive('/notifications') }" @click="router.push('/notifications')">
+        <el-icon><Bell /></el-icon>
+        <span>通知</span>
+        <span v-if="notificationUnread > 0" class="nav-badge">{{ notificationUnread > 99 ? '99+' : notificationUnread }}</span>
+      </button>
+
       <button class="nav-item" :class="{ active: route.path.startsWith('/profile') }" @click="router.push(`/profile/${userStore.userInfo?.id}`)">
         <el-icon><User /></el-icon>
         <span>我</span>
@@ -75,9 +81,10 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
+import { notificationApi } from '../api'
 import { ElMessageBox } from 'element-plus'
 
 const router = useRouter()
@@ -85,6 +92,7 @@ const route = useRoute()
 const userStore = useUserStore()
 const searchKeyword = ref('')
 const isDarkMode = ref(false)
+const notificationUnread = ref(0)
 const settingsTriggerRef = ref(null)
 const settingsMenuWidth = ref(220)
 
@@ -127,13 +135,31 @@ function syncSettingsMenuWidth() {
   settingsMenuWidth.value = Math.max(180, Math.round(triggerEl.getBoundingClientRect().width))
 }
 
-onMounted(() => {
+onMounted(async () => {
   const savedTheme = localStorage.getItem('theme')
   const shouldUseDark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
   isDarkMode.value = shouldUseDark
   applyDarkMode(shouldUseDark)
   syncSettingsMenuWidth()
+  await refreshNotificationUnread()
 })
+
+watch(() => route.path, async (path) => {
+  if (path === '/notifications') {
+    notificationUnread.value = 0
+    return
+  }
+  await refreshNotificationUnread()
+})
+
+async function refreshNotificationUnread() {
+  try {
+    const res = await notificationApi.getNotifications(1, 1)
+    notificationUnread.value = Number(res.data.unread_count || 0)
+  } catch {
+    notificationUnread.value = 0
+  }
+}
 </script>
 
 <style scoped>
@@ -177,6 +203,7 @@ onMounted(() => {
   color: var(--text-color);
   font-size: 15px;
   text-align: left;
+  position: relative;
 }
 
 .nav-item:hover {
@@ -186,6 +213,19 @@ onMounted(() => {
 .nav-item.active {
   background: #111;
   color: #fff;
+}
+
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  line-height: 18px;
+  border-radius: 999px;
+  background: #ff2e4d;
+  color: #fff;
+  font-size: 11px;
+  text-align: center;
+  padding: 0 5px;
 }
 
 .side-bottom {

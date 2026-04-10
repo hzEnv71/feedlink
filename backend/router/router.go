@@ -31,6 +31,7 @@ func SetupRouter() *gin.Engine {
 	followService := services.NewFollowService()
 	feedService := services.NewFeedService()
 	messageService := services.NewMessageService()
+	notificationService := services.NewNotificationService()
 
 	// 初始化Handler
 	userHandler := handlers.NewUserHandler(userService)
@@ -38,6 +39,7 @@ func SetupRouter() *gin.Engine {
 	feedHandler := handlers.NewFeedHandler(feedService)
 	uploadHandler := handlers.NewUploadHandler()
 	messageHandler := handlers.NewMessageHandler(messageService)
+	notificationHandler := handlers.NewNotificationHandler(notificationService)
 	wsHandler := handlers.NewWSHandler()
 
 	// API路由组
@@ -98,6 +100,10 @@ func SetupRouter() *gin.Engine {
 			authenticated.POST("/messages", messageHandler.SendMessage)
 			authenticated.GET("/messages/conversations", messageHandler.GetConversations)
 			authenticated.GET("/messages/:target_id", messageHandler.GetConversationMessages)
+
+			// 通知中心
+			authenticated.GET("/notifications", notificationHandler.ListNotifications)
+			authenticated.POST("/notifications/read-all", notificationHandler.MarkAllRead)
 		}
 	}
 

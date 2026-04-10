@@ -20,19 +20,21 @@ import (
 // 2) 数据访问下沉到 repository；
 // 3) 分发相关能力委托给 mq/cache。
 type FeedService struct {
-	userService *UserService
-	feedRepo    repository.FeedRepository
-	userRepo    repository.UserRepository
-	followRepo  repository.FollowRepository
+	userService         *UserService
+	feedRepo            repository.FeedRepository
+	userRepo            repository.UserRepository
+	followRepo          repository.FollowRepository
+	notificationService *NotificationService
 }
 
 // NewFeedService 构建 FeedService。
 func NewFeedService() *FeedService {
 	return &FeedService{
-		userService: &UserService{},
-		feedRepo:    repository.NewFeedRepository(models.DB),
-		userRepo:    repository.NewUserRepository(models.DB),
-		followRepo:  repository.NewFollowRepository(models.DB),
+		userService:         &UserService{},
+		feedRepo:            repository.NewFeedRepository(models.DB),
+		userRepo:            repository.NewUserRepository(models.DB),
+		followRepo:          repository.NewFollowRepository(models.DB),
+		notificationService: NewNotificationService(),
 	}
 }
 
@@ -408,6 +410,9 @@ func (s *FeedService) LikeFeed(userID, feedID uint) error {
 		return err
 	}
 	tx.Commit()
+	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
+		s.notificationService.CreateLikeNotification(userID, feed.UserID, feedID)
+	}
 	return nil
 }
 
@@ -444,6 +449,9 @@ func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.
 		return nil, err
 	}
 	tx.Commit()
+	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
+		s.notificationService.CreateCommentNotification(userID, feed.UserID, feedID, content)
+	}
 	return comment, nil
 }
 
