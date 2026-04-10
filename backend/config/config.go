@@ -12,13 +12,14 @@ const (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	RabbitMQ RabbitMQConfig `mapstructure:"rabbitmq"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Feed     FeedConfig     `mapstructure:"feed"`
-	Upload   UploadConfig   `mapstructure:"upload"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	RabbitMQ  RabbitMQConfig  `mapstructure:"rabbitmq"`
+	JWT       JWTConfig       `mapstructure:"jwt"`
+	Feed      FeedConfig      `mapstructure:"feed"`
+	Upload    UploadConfig    `mapstructure:"upload"`
+	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 }
 
 type ServerConfig struct {
@@ -82,6 +83,22 @@ type UploadConfig struct {
 	VideoMaxSize int      `mapstructure:"video_max_size"`
 }
 
+// RateLimitConfig 令牌桶限流配置。
+type RateLimitConfig struct {
+	LoginIP      TokenBucketConfig `mapstructure:"login_ip"`
+	RegisterIP   TokenBucketConfig `mapstructure:"register_ip"`
+	PublishFeed  TokenBucketConfig `mapstructure:"publish_feed"`
+	RepostFeed   TokenBucketConfig `mapstructure:"repost_feed"`
+	CommentFeed  TokenBucketConfig `mapstructure:"comment_feed"`
+	SendMessage  TokenBucketConfig `mapstructure:"send_message"`
+}
+
+// TokenBucketConfig 配置单个接口的 rate/burst。
+type TokenBucketConfig struct {
+	Rate  float64 `mapstructure:"rate"`
+	Burst int     `mapstructure:"burst"`
+}
+
 var AppConfig *Config
 
 func InitConfig() error {
@@ -99,8 +116,27 @@ func InitConfig() error {
 		return fmt.Errorf("unmarshal config failed: %w", err)
 	}
 
+	setRateLimitDefaults(&cfg.RateLimit)
 	AppConfig = cfg
 	return nil
+}
+
+func setRateLimitDefaults(c *RateLimitConfig) {
+	setTokenBucketDefault(&c.LoginIP, 0.3, 15)
+	setTokenBucketDefault(&c.RegisterIP, 0.2, 10)
+	setTokenBucketDefault(&c.PublishFeed, 0.2, 10)
+	setTokenBucketDefault(&c.RepostFeed, 0.4, 20)
+	setTokenBucketDefault(&c.CommentFeed, 0.6, 30)
+	setTokenBucketDefault(&c.SendMessage, 0.8, 40)
+}
+
+func setTokenBucketDefault(c *TokenBucketConfig, rate float64, burst int) {
+	if c.Rate <= 0 {
+		c.Rate = rate
+	}
+	if c.Burst <= 0 {
+		c.Burst = burst
+	}
 }
 
 func (d *DatabaseConfig) DSN() string {

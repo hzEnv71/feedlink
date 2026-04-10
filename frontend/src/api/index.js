@@ -112,6 +112,12 @@ export const feedApi = {
 }
 
 // ==================== 消息相关 ====================
+export const opsApi = {
+    getMQMetrics() {
+        return request.get('/ops/mq/metrics')
+    },
+}
+
 export const notificationApi = {
     getNotifications(page = 1, pageSize = 20) {
         return request.get('/notifications', { params: { page, page_size: pageSize } })

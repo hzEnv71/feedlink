@@ -137,7 +137,8 @@ func (r *feedMySQLRepository) ListByIDs(feedIDs []uint) ([]models.Feed, error) {
 func (r *feedMySQLRepository) SearchByKeyword(keyword string, page, pageSize int) ([]models.Feed, int64, error) {
 	var feeds []models.Feed
 	var total int64
-	query := r.db.Model(&models.Feed{}).Where("content LIKE ?", "%"+keyword+"%")
+	// Phase1：先改为前缀匹配，避免 %keyword% 全表扫描。
+	query := r.db.Model(&models.Feed{}).Where("content LIKE ?", keyword+"%")
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}

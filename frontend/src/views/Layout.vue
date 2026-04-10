@@ -38,6 +38,12 @@
           </button>
           <template #dropdown>
             <el-dropdown-menu class="settings-menu" :style="{ width: `${settingsMenuWidth}px` }">
+              <el-dropdown-item command="ops" class="settings-row">
+                <span class="settings-left">
+                  <el-icon><Monitor /></el-icon>
+                  <span>运维面板</span>
+                </span>
+              </el-dropdown-item>
               <el-dropdown-item command="logout" class="settings-row">
                 <span class="settings-left">
                   <el-icon><SwitchButton /></el-icon>
@@ -117,6 +123,11 @@ function goDiscoverSearch() {
 }
 
 function handleSettingCommand(command) {
+  if (command === 'ops') {
+    router.push('/ops')
+    return
+  }
+
   if (command === 'logout') {
     ElMessageBox.confirm('确定退出登录吗？', '提示', {
       confirmButtonText: '确定',

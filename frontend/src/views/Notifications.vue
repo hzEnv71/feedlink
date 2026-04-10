@@ -9,8 +9,8 @@
       <!-- 小红书风格分类标签 -->
       <el-tabs v-model="activeTab" class="tabs">
         <el-tab-pane label="全部" name="all" />
-        <el-tab-pane label="赞和收藏" name="like" />
-        <el-tab-pane label="评论和@" name="comment" />
+        <el-tab-pane label="赞" name="like" />
+        <el-tab-pane label="评论" name="comment" />
         <el-tab-pane label="新增关注" name="follow" />
       </el-tabs>
     </section>

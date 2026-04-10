@@ -5,6 +5,7 @@ import (
 	"feed/config"
 	"fmt"
 	"log"
+	"math/rand"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -90,9 +91,11 @@ func RemoveFromInbox(userID uint, feedID uint) error {
 	return RedisClient.ZRem(Ctx, key, feedID).Err()
 }
 
+// CacheFeedDetail 缓存 Feed 详情（带随机抖动，防缓存雪崩）。
 func CacheFeedDetail(feedID uint, data string) error {
 	key := fmt.Sprintf(KeyFeedDetail, feedID)
-	return RedisClient.Set(Ctx, key, data, 24*time.Hour).Err()
+	ttl := withJitter(24*time.Hour, 10*time.Minute)
+	return RedisClient.Set(Ctx, key, data, ttl).Err()
 }
 
 func GetFeedDetail(feedID uint) (string, error) {
@@ -100,9 +103,17 @@ func GetFeedDetail(feedID uint) (string, error) {
 	return RedisClient.Get(Ctx, key).Result()
 }
 
+// DeleteFeedDetail 主动失效动态详情缓存，用于写操作后的强一致刷新。
+func DeleteFeedDetail(feedID uint) error {
+	key := fmt.Sprintf(KeyFeedDetail, feedID)
+	return RedisClient.Del(Ctx, key).Err()
+}
+
+// CacheUserInfo 缓存用户资料（带随机抖动，防缓存雪崩）。
 func CacheUserInfo(userID uint, data string) error {
 	key := fmt.Sprintf(KeyUserInfo, userID)
-	return RedisClient.Set(Ctx, key, data, 12*time.Hour).Err()
+	ttl := withJitter(12*time.Hour, 5*time.Minute)
+	return RedisClient.Set(Ctx, key, data, ttl).Err()
 }
 
 func GetUserInfo(userID uint) (string, error) {
@@ -124,7 +135,22 @@ func SetFollowers(userID uint, followerIDs []any) error {
 	pipe := RedisClient.Pipeline()
 	pipe.Del(Ctx, key)
 	pipe.SAdd(Ctx, key, followerIDs...)
-	pipe.Expire(Ctx, key, 24*time.Hour)
+	pipe.Expire(Ctx, key, withJitter(24*time.Hour, 20*time.Minute))
+	_, err := pipe.Exec(Ctx)
+	return err
+}
+
+// SetFollowing 将关注列表批量写入缓存（带随机抖动，防雪崩）。
+func SetFollowing(userID uint, followingIDs []any) error {
+	key := fmt.Sprintf(KeyFollowing, userID)
+	if len(followingIDs) == 0 {
+		return nil
+	}
+
+	pipe := RedisClient.Pipeline()
+	pipe.Del(Ctx, key)
+	pipe.SAdd(Ctx, key, followingIDs...)
+	pipe.Expire(Ctx, key, withJitter(24*time.Hour, 20*time.Minute))
 	_, err := pipe.Exec(Ctx)
 	return err
 }
@@ -198,4 +224,12 @@ func getSortedSetByRangeDesc(key string, offset, limit int64) ([]string, error) 
 		return []string{}, nil
 	}
 	return RedisClient.ZRevRange(Ctx, key, offset, offset+limit-1).Result()
+}
+
+func withJitter(baseTTL, maxJitter time.Duration) time.Duration {
+	if maxJitter <= 0 {
+		return baseTTL
+	}
+	jitter := time.Duration(rand.Int63n(int64(maxJitter)))
+	return baseTTL + jitter
 }

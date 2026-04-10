@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"errors"
 	"feed/cache"
 	"feed/models"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )
 
@@ -25,6 +27,7 @@ type FeedService struct {
 	userRepo            repository.UserRepository
 	followRepo          repository.FollowRepository
 	notificationService *NotificationService
+	cacheGroup          singleflight.Group
 }
 
 // NewFeedService 构建 FeedService。
@@ -93,6 +96,7 @@ func (s *FeedService) UpdateFeed(feedID, userID uint, req *UpdateFeedRequest) (*
 	if err := s.feedRepo.UpdateByID(feedID, updates); err != nil {
 		return nil, errors.New("编辑失败")
 	}
+	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err()
 	return s.feedRepo.GetByID(feedID)
 }
 
@@ -138,6 +142,7 @@ func (s *FeedService) DeleteFeed(feedID, userID uint) error {
 	if err := s.feedRepo.Delete(feed); err != nil {
 		return errors.New("删除失败")
 	}
+	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err()
 
 	go func() {
 		key := strconv.FormatUint(uint64(feedID), 10)
@@ -153,15 +158,41 @@ func (s *FeedService) DeleteFeed(feedID, userID uint) error {
 	return nil
 }
 
+// GetFeedByID 获取动态详情：优先读缓存，缓存未命中时 singleflight 合并回源请求。
 func (s *FeedService) GetFeedByID(feedID, currentUserID uint) (*models.FeedResponse, error) {
-	feed, err := s.feedRepo.GetByID(feedID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("动态不存在")
+	if raw, err := cache.GetFeedDetail(feedID); err == nil && raw != "" {
+		var resp models.FeedResponse
+		if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
+			if currentUserID > 0 {
+				if like, likeErr := s.feedRepo.GetLike(currentUserID, feedID); likeErr == nil && like != nil {
+					resp.IsLiked = true
+				}
+			}
+			return &resp, nil
 		}
+	}
+
+	val, err, _ := s.cacheGroup.Do("feed_detail:"+strconv.FormatUint(uint64(feedID), 10), func() (any, error) {
+		feed, dbErr := s.feedRepo.GetByID(feedID)
+		if dbErr != nil {
+			if errors.Is(dbErr, gorm.ErrRecordNotFound) {
+				return nil, errors.New("动态不存在")
+			}
+			return nil, dbErr
+		}
+		resp := s.buildFeedResponse(feed, currentUserID)
+		cachePayload := *resp
+		cachePayload.IsLiked = false
+		if b, mErr := json.Marshal(cachePayload); mErr == nil {
+			_ = cache.CacheFeedDetail(feedID, string(b))
+		}
+		return resp, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.buildFeedResponse(feed, currentUserID), nil
+	resp, _ := val.(*models.FeedResponse)
+	return resp, nil
 }
 
 func (s *FeedService) GetUserFeeds(userID uint, page, pageSize int, currentUserID uint) ([]models.FeedResponse, int64, error) {
@@ -392,6 +423,7 @@ func (s *FeedService) buildFeedResponses(feeds []models.Feed, currentUserID uint
 	return responses
 }
 
+// LikeFeed 点赞动态，并在成功后失效该动态详情缓存，避免计数陈旧。
 func (s *FeedService) LikeFeed(userID, feedID uint) error {
 	if _, err := s.feedRepo.GetByID(feedID); err != nil {
 		return errors.New("动态不存在")
@@ -410,12 +442,14 @@ func (s *FeedService) LikeFeed(userID, feedID uint) error {
 		return err
 	}
 	tx.Commit()
+	_ = cache.DeleteFeedDetail(feedID)
 	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
 		s.notificationService.CreateLikeNotification(userID, feed.UserID, feedID)
 	}
 	return nil
 }
 
+// UnlikeFeed 取消点赞，并失效动态详情缓存，保证读到最新计数。
 func (s *FeedService) UnlikeFeed(userID, feedID uint) error {
 	like, err := s.feedRepo.GetLike(userID, feedID)
 	if err != nil || like == nil {
@@ -431,9 +465,11 @@ func (s *FeedService) UnlikeFeed(userID, feedID uint) error {
 		return err
 	}
 	tx.Commit()
+	_ = cache.DeleteFeedDetail(feedID)
 	return nil
 }
 
+// CommentFeed 发布评论，并失效动态详情缓存，保证评论数及时刷新。
 func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.Comment, error) {
 	if _, err := s.feedRepo.GetByID(feedID); err != nil {
 		return nil, errors.New("动态不存在")
@@ -449,6 +485,7 @@ func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.
 		return nil, err
 	}
 	tx.Commit()
+	_ = cache.DeleteFeedDetail(feedID)
 	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
 		s.notificationService.CreateCommentNotification(userID, feed.UserID, feedID, content)
 	}
@@ -480,6 +517,7 @@ func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]map[string
 	return result, total, nil
 }
 
+// DeleteComment 删除评论，并失效动态详情缓存，避免评论数不一致。
 func (s *FeedService) DeleteComment(currentUserID, feedID, commentID uint) error {
 	comment, err := s.feedRepo.GetCommentByIDAndFeedID(commentID, feedID)
 	if err != nil {
@@ -501,6 +539,7 @@ func (s *FeedService) DeleteComment(currentUserID, feedID, commentID uint) error
 		return err
 	}
 	tx.Commit()
+	_ = cache.DeleteFeedDetail(feedID)
 	return nil
 }
 

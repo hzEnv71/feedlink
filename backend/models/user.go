@@ -10,9 +10,9 @@ import (
 // User 用户模型
 type User struct {
 	ID            uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	Username      string         `gorm:"type:varchar(50);uniqueIndex;not null" json:"username"`
+	Username      string         `gorm:"type:varchar(50);uniqueIndex;index:idx_user_search_username;not null" json:"username"`
 	Password      string         `gorm:"type:varchar(255);not null" json:"-"`
-	Nickname      string         `gorm:"type:varchar(100);not null" json:"nickname"`
+	Nickname      string         `gorm:"type:varchar(100);index:idx_user_search_nickname;not null" json:"nickname"`
 	Avatar        string         `gorm:"type:varchar(500);default:''" json:"avatar"`
 	Bio           string         `gorm:"type:varchar(500);default:''" json:"bio"`
 	FollowerCount int64          `gorm:"default:0" json:"follower_count"` // 粉丝数

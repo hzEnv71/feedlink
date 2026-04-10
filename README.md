@@ -1,40 +1,174 @@
+# Feed 社交系统（时间线 + 私信 + 通知中心）
 
-
-# 仿朋友圈与抖音私信功能
-支持：
-
-- 用户注册 / 登录（JWT）
-- 关注 / 取关
-- 发布动态（文字、图片、视频）
-- 时间线（朋友圈）
-- 点赞、评论、转发、删除
-- 个人主页（头像、签名、访客）
-- 私信消息（会话列表 + 聊天记录）
+一个基于 Go + Vue 的社交系统，当前已实现：
+- 用户体系（注册/登录/JWT）
+- 关注关系
+- 动态发布与时间线（推拉混合）
+- 点赞/评论/转发
+- 私信会话 + WebSocket 实时消息
+- 通知中心（点赞/评论/关注）
+- RabbitMQ 异步分发（重试、DLQ、幂等）
+- Redis 缓存与令牌桶限流
 
 ---
 
 ## 技术栈
 
 ### 后端（`backend/`）
-
-- Go / Gin / GORM / MySQL / Redis / RabbitMQ / JWT
+- Go 1.25+
+- Gin
+- GORM + MySQL
+- Redis
+- RabbitMQ
+- JWT
 
 ### 前端（`frontend/`）
-
-- Vue 3（Composition API） Vue Router Pinia  Axios  Element Plus  Vite
+- Vue 3（Composition API）
+- Vue Router
+- Pinia
+- Axios
+- Element Plus
+- Vite
 
 ---
 
-## 项目截图
-- 动态页面
-![动态页面](./pic/屏幕截图%202026-04-08%20222747.png)
-- 主页页面
-![主页页面](./pic/屏幕截图%202026-04-08%20222758.png)
-- 消息页面
-![消息页面](./pic/屏幕截图%202026-04-08%20222806.png)
+## 当前核心功能（按模块）
 
+### 1. 账号与用户
+- 注册 / 登录（JWT）
+- 获取当前用户资料、更新资料（昵称/头像/签名）
+- 用户搜索
+- 最近访客记录（visit）
 
+### 2. 关注关系
+- 关注 / 取关
+- 粉丝/关注列表
+- 关注关系缓存（Redis Set）
 
+### 3. 动态系统
+- 发布动态（文案/图片/视频）
+- 转发动态
+- 删除动态
+- 点赞 / 取消点赞
+- 评论 / 删除评论
+- 动态详情
+
+### 4. 时间线（核心）
+- 推拉混合：
+  - 普通用户写扩散（push -> inbox）
+  - 大V读扩散（pull <- outbox）
+- 聚合 own + push + pull 后去重排序
+- 游标分页：`cursor / next_cursor / has_more`
+
+### 5. 私信与实时消息
+- 私信发送
+- 会话列表与会话消息
+- 未读计数
+- WebSocket 实时推送（`message:new`）
+
+### 6. 通知中心
+- 通知类型：`like / comment / follow`
+- 通知列表分页
+- 未读统计
+- 一键全部已读
+
+### 7. 搜索中心
+- 全局搜索入口
+- 搜索结果页支持 Tab：
+  - 用户
+  - 动态
+
+---
+
+## 可用性与高并发能力（已实现）
+
+### 1) MQ 可靠性
+- 主队列 + 重试队列 + 死信队列（DLQ）
+- 失败重试（延迟重试）
+- 超过重试次数进入 DLQ
+- 消费幂等（Redis `SETNX + TTL`）
+
+### 2) MQ 降级与熔断
+- MQ 发布失败触发熔断（短期开路）
+- 熔断期间降级为“仅写 outbox”，保障发布主链路
+- 消费侧 DB timeline 写失败降级不阻断主分发
+
+### 3) 缓存策略
+- Feed 详情缓存
+- 用户资料缓存
+- TTL 随机抖动（防雪崩）
+- `singleflight` 防缓存击穿（热点回源合并）
+- 写操作后主动失效关键缓存
+
+### 4) 索引优化
+已在模型层补充核心索引：
+- `feeds(created_at, user_id)`
+- `likes(feed_id, user_id)`
+- `comments(feed_id, created_at)`
+- `messages(to_user_id, is_read, created_at)`
+
+### 5) 搜索优化（Phase 1）
+- 避免全表 `LIKE %keyword%`
+- 改为前缀策略 `keyword%`（可利用索引）
+
+### 6) 限流（令牌桶）
+- Redis 令牌桶限流中间件
+- IP 维度：登录/注册
+- 用户维度：发布/转发/评论/私信
+- 参数可在 `config.yaml` 配置（`rate_limit`）
+
+---
+
+## API 概览
+
+### Auth
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+
+### User
+- `GET /api/users/me`
+- `PUT /api/users/me`
+- `GET /api/users/me/visits`
+- `GET /api/users/search`
+- `GET /api/users/:id`
+
+### Follow
+- `POST /api/follow/:id`
+- `DELETE /api/follow/:id`
+- `GET /api/users/:id/followers`
+- `GET /api/users/:id/following`
+
+### Feed / Timeline
+- `POST /api/feeds`
+- `POST /api/feeds/repost`
+- `DELETE /api/feeds/:id`
+- `GET /api/feeds/:id`
+- `GET /api/feeds/search`
+- `GET /api/users/:id/feeds`
+- `GET /api/timeline?cursor=0&page_size=20`
+
+### Like / Comment
+- `POST /api/feeds/:id/like`
+- `DELETE /api/feeds/:id/like`
+- `GET /api/feeds/:id/likes`
+- `POST /api/feeds/:id/comments`
+- `GET /api/feeds/:id/comments`
+- `DELETE /api/feeds/:id/comments/:comment_id`
+
+### Message / WS
+- `POST /api/messages`
+- `GET /api/messages/conversations`
+- `GET /api/messages/:target_id`
+- `GET /ws/messages?token=xxx`
+
+### Notification
+- `GET /api/notifications`
+- `POST /api/notifications/read-all`
+
+### Ops（观测）
+- `GET /api/ops/mq/metrics`
+
+---
 
 ## 项目结构
 
@@ -43,135 +177,45 @@ feed/
 ├─ backend/
 │  ├─ main.go
 │  ├─ config.yaml
-│  ├─ go.mod
-│  ├─ handlers/
-│  ├─ services/
-│  ├─ models/
-│  ├─ middleware/
-│  ├─ router/
 │  ├─ cache/
-│  ├─ utils/
-│  └─ uploads/
+│  ├─ config/
+│  ├─ handlers/
+│  ├─ middleware/
+│  ├─ models/
+│  ├─ mq/
+│  ├─ realtime/
+│  ├─ repository/
+│  ├─ router/
+│  ├─ services/
+│  └─ utils/
 ├─ frontend/
 │  ├─ package.json
-│  ├─ vite.config.js
 │  └─ src/
 │     ├─ api/
 │     ├─ components/
 │     ├─ router/
 │     ├─ stores/
 │     └─ views/
-├─ docker-compose.yml
 └─ README.md
 ```
 
 ---
 
-## 核心功能
-
-### 1) 用户与关系
-
-- 注册、登录、鉴权
-- 搜索用户
-- 关注 / 取消关注
-- 个人主页展示粉丝、关注、访客
-
-### 2) 动态系统
-
-- 发布文字、图片、视频动态
-- 查看自己和他人的动态
-- 点赞 / 取消点赞
-- 评论 / 删除评论
-- 转发动态
-- 删除自己的动态
-
-### 3) 个人主页增强
-
-- 修改头像
-- 修改个性签名
-- 记录最近访客
-
-### 4) 私信消息
-
-- 在他人主页点击“私信”可发起第一次聊天
-- 消息页展示会话列表（头像、昵称、最后一条消息、时间）
-- 聊天页展示完整对话记录
-- 支持发送新消息并刷新会话
-
----
-
-## API 概览
-
-### 认证
-
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-
-### 用户
-
-- `GET /api/users/me`
-- `PUT /api/users/me`
-- `GET /api/users/me/visitors`
-- `GET /api/users/search`
-- `GET /api/users/:id`
-
-### 关注
-
-- `POST /api/follow/:id`
-- `DELETE /api/follow/:id`
-- `GET /api/users/:id/followers`
-- `GET /api/users/:id/following`
-
-### 动态
-
-- `POST /api/feeds`
-- `POST /api/feeds/repost`
-- `DELETE /api/feeds/:id`
-- `GET /api/feeds/:id`
-- `GET /api/users/:id/feeds`
-- `GET /api/timeline`
-
-### 点赞/评论
-
-- `POST /api/feeds/:id/like`
-- `DELETE /api/feeds/:id/like`
-- `GET /api/feeds/:id/likes`
-- `POST /api/feeds/:id/comments`
-- `GET /api/feeds/:id/comments`
-- `DELETE /api/feeds/:id/comments/:comment_id`
-
-### 上传
-
-- `POST /api/upload/image`
-- `POST /api/upload/video`
-
-### 私信
-
-- `POST /api/messages`
-- `GET /api/messages/conversations`
-- `GET /api/messages/:target_id`
-
----
-
 ## 本地运行
 
-## 1. 准备依赖
-
-请先启动：
-
+### 1) 启动依赖
+请先准备：
 - MySQL
 - Redis
 - RabbitMQ
 
-也可以使用：
+可使用：
 
 ```bash
 docker compose up -d
 ```
 
-> 注意检查 `backend/config.yaml` 中的数据库与 Redis 配置是否和本地环境一致。
-
-## 2. 启动后端
+### 2) 启动后端
 
 ```bash
 cd backend
@@ -179,9 +223,9 @@ go mod tidy
 go run main.go
 ```
 
-默认后端地址：`http://localhost:8080`
+默认：`http://localhost:8080`
 
-## 3. 启动前端
+### 3) 启动前端
 
 ```bash
 cd frontend
@@ -189,22 +233,24 @@ npm install
 npm run dev
 ```
 
-默认前端地址：`http://localhost:3000`（或 Vite 控制台显示端口）
+---
+
+## 配置说明（重点）
+
+后端配置文件：`backend/config.yaml`
+
+重点可调参数：
+- `feed.*`：大V阈值、推拉边界、收发件箱大小
+- `rabbitmq.*`：重试/DLQ/幂等 TTL
+- `rate_limit.*`：令牌桶限流速率与突发容量
 
 ---
 
-## 配置说明
-
-后端核心配置文件：`backend/config.yaml`
-
-可配置项包括：
-
-- 服务端口、运行模式
-- MySQL 连接
-- Redis 连接
-- JWT 密钥与过期时间
-- 上传目录与大小限制
-- Feed 相关阈值参数
+## 未来可继续增强
+- 计数异步聚合（点赞/评论 Redis 累积后回刷 DB）
+- Prometheus + Grafana 指标监控
+- 更细粒度的熔断与降级开关
+- 搜索升级到 FULLTEXT / ES
 
 ---
 

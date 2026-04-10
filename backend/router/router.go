@@ -41,17 +41,20 @@ func SetupRouter() *gin.Engine {
 	messageHandler := handlers.NewMessageHandler(messageService)
 	notificationHandler := handlers.NewNotificationHandler(notificationService)
 	wsHandler := handlers.NewWSHandler()
+	opsHandler := handlers.NewOpsHandler()
 
 	// API路由组
 	r.GET("/ws/messages", wsHandler.MessageWS)
 
 	api := r.Group("/api")
 	{
+		rl := config.AppConfig.RateLimit
+
 		// ==================== 认证相关（无需登录） ====================
 		auth := api.Group("/auth")
 		{
-			auth.POST("/register", userHandler.Register)
-			auth.POST("/login", userHandler.Login)
+			auth.POST("/register", middleware.RateLimitByIP("register", rl.RegisterIP.Rate, rl.RegisterIP.Burst), userHandler.Register)
+			auth.POST("/login", middleware.RateLimitByIP("login", rl.LoginIP.Rate, rl.LoginIP.Burst), userHandler.Login)
 		}
 
 		// ==================== 需要登录的路由 ====================
@@ -76,8 +79,8 @@ func SetupRouter() *gin.Engine {
 			authenticated.GET("/users/:id/following", followHandler.GetFollowing)
 
 			// Feed相关
-			authenticated.POST("/feeds", feedHandler.PublishFeed)
-			authenticated.POST("/feeds/repost", feedHandler.RepostFeed)
+			authenticated.POST("/feeds", middleware.RateLimitByUser("publish_feed", rl.PublishFeed.Rate, rl.PublishFeed.Burst), feedHandler.PublishFeed)
+			authenticated.POST("/feeds/repost", middleware.RateLimitByUser("repost_feed", rl.RepostFeed.Rate, rl.RepostFeed.Burst), feedHandler.RepostFeed)
 			authenticated.DELETE("/feeds/:id", feedHandler.DeleteFeed)
 			authenticated.GET("/feeds/search", feedHandler.SearchFeeds)
 			authenticated.GET("/feeds/:id", feedHandler.GetFeed)
@@ -92,18 +95,21 @@ func SetupRouter() *gin.Engine {
 			authenticated.GET("/feeds/:id/likes", feedHandler.GetFeedLikers)
 
 			// 评论
-			authenticated.POST("/feeds/:id/comments", feedHandler.CommentFeed)
+			authenticated.POST("/feeds/:id/comments", middleware.RateLimitByUser("comment_feed", rl.CommentFeed.Rate, rl.CommentFeed.Burst), feedHandler.CommentFeed)
 			authenticated.GET("/feeds/:id/comments", feedHandler.GetComments)
 			authenticated.DELETE("/feeds/:id/comments/:comment_id", feedHandler.DeleteComment)
 
 			// 私信
-			authenticated.POST("/messages", messageHandler.SendMessage)
+			authenticated.POST("/messages", middleware.RateLimitByUser("send_message", rl.SendMessage.Rate, rl.SendMessage.Burst), messageHandler.SendMessage)
 			authenticated.GET("/messages/conversations", messageHandler.GetConversations)
 			authenticated.GET("/messages/:target_id", messageHandler.GetConversationMessages)
 
 			// 通知中心
 			authenticated.GET("/notifications", notificationHandler.ListNotifications)
 			authenticated.POST("/notifications/read-all", notificationHandler.MarkAllRead)
+
+			// 运维观测
+			authenticated.GET("/ops/mq/metrics", opsHandler.MQMetrics)
 		}
 	}
 

@@ -60,3 +60,24 @@ upload:
   image_max_size: 10
   # 视频最大大小 (MB)
   video_max_size: 100
+
+rate_limit:
+  # 令牌桶：rate=每秒补充令牌数，burst=桶容量（瞬时突发上限）
+  login_ip:
+    rate: 0.3
+    burst: 15
+  register_ip:
+    rate: 0.2
+    burst: 10
+  publish_feed:
+    rate: 0.2
+    burst: 10
+  repost_feed:
+    rate: 0.4
+    burst: 20
+  comment_feed:
+    rate: 0.6
+    burst: 30
+  send_message:
+    rate: 0.8
+    burst: 40

@@ -67,7 +67,8 @@ func (r *userMySQLRepository) Search(keyword string, page, pageSize int) ([]mode
 	var users []models.User
 	var total int64
 
-	query := r.db.Model(&models.User{}).Where("username LIKE ? OR nickname LIKE ?", "%"+keyword+"%", "%"+keyword+"%")
+	// Phase1 搜索优化：优先使用前缀匹配，命中 username/nickname 索引，避免全表扫描。
+	query := r.db.Model(&models.User{}).Where("username LIKE ? OR nickname LIKE ?", keyword+"%", keyword+"%")
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}

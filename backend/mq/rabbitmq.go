@@ -10,6 +10,7 @@ import (
 	"maps"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -33,6 +34,16 @@ var (
 	publisherChan  *amqp.Channel
 	publisherQueue amqp.Queue
 	publisherMu    sync.Mutex
+
+	mqCircuitOpenUntil int64 // unix seconds，> now 表示熔断开启
+
+	mqCircuitOpenCount   uint64
+	mqCircuitCloseCount  uint64
+	mqDegradeCount       uint64
+	mqPublishFailCount   uint64
+	mqRetryCount         uint64
+	mqDLQCount           uint64
+	mqDispatchErrorCount uint64
 )
 
 // InitMQ 初始化 RabbitMQ，并启动消费者。
@@ -140,11 +151,17 @@ func declareDeadLetterQueue(ch *amqp.Channel) (amqp.Queue, error) {
 }
 
 // PublishFeed 发布 Feed 推送任务。
+// PublishFeed 发布任务到 MQ；当熔断开启时降级为仅写 outbox，保障发布主链路可用。
 func PublishFeed(feedID, authorID uint) {
 	msg := FeedMessage{
 		FeedID:    feedID,
 		AuthorID:  authorID,
 		Timestamp: float64(time.Now().UnixMilli()),
+	}
+
+	if isCircuitOpen() {
+		degradeToOutbox(msg)
+		return
 	}
 
 	body, err := json.Marshal(msg)
@@ -179,9 +196,14 @@ func PublishFeed(feedID, authorID uint) {
 	}
 
 	if err != nil {
+		atomic.AddUint64(&mqPublishFailCount, 1)
 		log.Printf("[MQ] Publish feed %d failed: %v", feedID, err)
+		openCircuit(15 * time.Second)
+		degradeToOutbox(msg)
 		return
 	}
+
+	closeCircuit()
 
 	log.Printf("[MQ] Feed %d published to queue", feedID)
 }
@@ -330,6 +352,7 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 	}
 
 	if err := dispatchToFollowers(workerID, msg); err != nil {
+		atomic.AddUint64(&mqDispatchErrorCount, 1)
 		return false, err
 	}
 	return true, nil
@@ -362,7 +385,8 @@ func dispatchToFollowers(workerID int, msg FeedMessage) error {
 			CreatedAt: time.Now(),
 		}
 		if err := models.DB.Create(&timeline).Error; err != nil {
-			log.Printf("[MQ Worker %d] Create timeline record failed: %v", workerID, err)
+			// 降级策略：timeline 落库失败不影响主分发路径，避免放大 DB 故障。
+			log.Printf("[MQ Worker %d] Create timeline record failed (degraded): %v", workerID, err)
 		}
 
 		successCount++
@@ -399,9 +423,11 @@ func handleRetryOrDeadLetter(workerID int, d amqp.Delivery, processErr error) {
 	var routeQueue string
 	if retryCount > maxRetries {
 		routeQueue = cfg.DeadLetterQueueName()
+		atomic.AddUint64(&mqDLQCount, 1)
 		log.Printf("[MQ Worker %d] move message to DLQ after %d retries, err=%v", workerID, retryCount-1, processErr)
 	} else {
 		routeQueue = cfg.RetryQueueName()
+		atomic.AddUint64(&mqRetryCount, 1)
 		log.Printf("[MQ Worker %d] retry message #%d, err=%v", workerID, retryCount, processErr)
 	}
 
@@ -462,6 +488,62 @@ func copyHeaders(src amqp.Table) amqp.Table {
 	dst := amqp.Table{}
 	maps.Copy(dst, src)
 	return dst
+}
+
+func isCircuitOpen() bool {
+	until := atomic.LoadInt64(&mqCircuitOpenUntil)
+	if until == 0 {
+		return false
+	}
+	return time.Now().Unix() < until
+}
+
+func openCircuit(duration time.Duration) {
+	until := time.Now().Add(duration).Unix()
+	old := atomic.LoadInt64(&mqCircuitOpenUntil)
+	atomic.StoreInt64(&mqCircuitOpenUntil, until)
+	if old == 0 || time.Now().Unix() >= old {
+		atomic.AddUint64(&mqCircuitOpenCount, 1)
+		log.Printf("[MQ][Circuit] opened for %s", duration)
+	}
+}
+
+func closeCircuit() {
+	old := atomic.LoadInt64(&mqCircuitOpenUntil)
+	if old != 0 {
+		atomic.AddUint64(&mqCircuitCloseCount, 1)
+		log.Printf("[MQ][Circuit] closed")
+	}
+	atomic.StoreInt64(&mqCircuitOpenUntil, 0)
+}
+
+// degradeToOutbox 降级路径：MQ 不可用时仅写作者 outbox，避免发布链路被阻塞。
+func degradeToOutbox(msg FeedMessage) {
+	atomic.AddUint64(&mqDegradeCount, 1)
+	if err := cache.AddToOutbox(msg.AuthorID, msg.FeedID, msg.Timestamp); err != nil {
+		log.Printf("[MQ][Degrade] add to outbox failed, author=%d feed=%d err=%v", msg.AuthorID, msg.FeedID, err)
+		return
+	}
+	log.Printf("[MQ][Degrade] circuit open, fallback to outbox only, author=%d feed=%d", msg.AuthorID, msg.FeedID)
+}
+
+// SnapshotMetrics 返回 MQ 熔断/降级关键指标快照，便于接入监控上报。
+func SnapshotMetrics() map[string]uint64 {
+	openUntil := atomic.LoadInt64(&mqCircuitOpenUntil)
+	isOpen := uint64(0)
+	if openUntil > time.Now().Unix() {
+		isOpen = 1
+	}
+	return map[string]uint64{
+		"circuit_open":         isOpen,
+		"circuit_open_count":   atomic.LoadUint64(&mqCircuitOpenCount),
+		"circuit_close_count":  atomic.LoadUint64(&mqCircuitCloseCount),
+		"degrade_count":        atomic.LoadUint64(&mqDegradeCount),
+		"publish_fail_count":   atomic.LoadUint64(&mqPublishFailCount),
+		"retry_count":          atomic.LoadUint64(&mqRetryCount),
+		"dlq_count":            atomic.LoadUint64(&mqDLQCount),
+		"dispatch_error_count": atomic.LoadUint64(&mqDispatchErrorCount),
+	}
 }
 
 func parseHeaderInt(v any) int {

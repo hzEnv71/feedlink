@@ -76,6 +76,8 @@ func (s *FollowService) Follow(userID, followedID uint) error {
 	cache.AddFollower(followedID, userID)
 	cache.DeleteUserCache(userID)
 	cache.DeleteUserCache(followedID)
+	go s.refreshFollowRelationCache(userID)
+	go s.refreshFollowerRelationCache(followedID)
 
 	s.userService.UpdateBigVStatus(followedID)
 	s.notificationService.CreateFollowNotification(userID, followedID)
@@ -120,6 +122,8 @@ func (s *FollowService) Unfollow(userID, followedID uint) error {
 	cache.RemoveFollower(followedID, userID)
 	cache.DeleteUserCache(userID)
 	cache.DeleteUserCache(followedID)
+	go s.refreshFollowRelationCache(userID)
+	go s.refreshFollowerRelationCache(followedID)
 
 	s.userService.UpdateBigVStatus(followedID)
 	go s.cleanInbox(userID, followedID)
@@ -201,4 +205,30 @@ func (s *FollowService) cleanInbox(userID, unfollowedID uint) {
 		cache.RemoveFromInbox(userID, feed.ID)
 	}
 	_ = s.followRepo.DeleteTimelineByUserAndAuthor(userID, unfollowedID)
+}
+
+// refreshFollowRelationCache 回源数据库并批量刷新“我关注的人”缓存。
+func (s *FollowService) refreshFollowRelationCache(userID uint) {
+	follows, _, err := s.followRepo.ListFollowing(userID, 1, 5000)
+	if err != nil {
+		return
+	}
+	ids := make([]any, 0, len(follows))
+	for _, f := range follows {
+		ids = append(ids, f.FollowedID)
+	}
+	_ = cache.SetFollowing(userID, ids)
+}
+
+// refreshFollowerRelationCache 回源数据库并批量刷新“谁关注我”缓存。
+func (s *FollowService) refreshFollowerRelationCache(userID uint) {
+	follows, _, err := s.followRepo.ListFollowers(userID, 1, 5000)
+	if err != nil {
+		return
+	}
+	ids := make([]any, 0, len(follows))
+	for _, f := range follows {
+		ids = append(ids, f.UserID)
+	}
+	_ = cache.SetFollowers(userID, ids)
 }

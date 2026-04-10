@@ -58,6 +58,11 @@ const routes = [
                 name: 'SearchResult',
                 component: () => import('../views/SearchResult.vue'),
             },
+            {
+                path: 'ops',
+                name: 'OpsPanel',
+                component: () => import('../views/OpsPanel.vue'),
+            },
         ],
     },
 ]

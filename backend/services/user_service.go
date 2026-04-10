@@ -1,16 +1,19 @@
 package services
 
 import (
+	"encoding/json"
 	"errors"
 	"feed/cache"
 	"feed/config"
 	"feed/models"
 	"feed/repository"
 	"feed/utils"
+	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )
 
@@ -20,6 +23,7 @@ import (
 // - 底层数据访问通过 UserRepository 完成。
 type UserService struct {
 	userRepo repository.UserRepository
+	cacheGrp singleflight.Group
 }
 
 func NewUserService() *UserService {
@@ -122,12 +126,35 @@ func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
 
 // GetUserProfile 获取用户资料（含是否关注状态）
 func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.UserResponse, error) {
-	user, err := s.GetUserByID(targetUserID)
+	var resp models.UserResponse
+	if raw, err := cache.GetUserInfo(targetUserID); err == nil && raw != "" {
+		if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
+			if currentUserID > 0 && currentUserID != targetUserID {
+				isFollowed, _ := cache.IsFollowing(currentUserID, targetUserID)
+				if !isFollowed {
+					isFollowed, _ = s.userRepo.IsFollowing(currentUserID, targetUserID)
+				}
+				resp.IsFollowed = isFollowed
+			}
+			return &resp, nil
+		}
+	}
+
+	val, err, _ := s.cacheGrp.Do("user_profile:"+strconv.FormatUint(uint64(targetUserID), 10), func() (any, error) {
+		user, dbErr := s.GetUserByID(targetUserID)
+		if dbErr != nil {
+			return nil, dbErr
+		}
+		r := user.ToResponse()
+		if b, mErr := json.Marshal(r); mErr == nil {
+			_ = cache.CacheUserInfo(targetUserID, string(b))
+		}
+		return r, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	resp := user.ToResponse()
+	resp = val.(models.UserResponse)
 
 	if currentUserID > 0 && currentUserID != targetUserID {
 		isFollowed, _ := cache.IsFollowing(currentUserID, targetUserID)

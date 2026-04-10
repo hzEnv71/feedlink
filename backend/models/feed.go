@@ -16,7 +16,7 @@ const (
 // Feed 动态/帖子模型（发件箱 - 存储用户发布的内容）
 type Feed struct {
 	ID           uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID       uint           `gorm:"index:idx_user_created;not null" json:"user_id"` // 发布者ID
+	UserID       uint           `gorm:"index:idx_user_created;index:idx_feed_created_user,priority:2;not null" json:"user_id"` // 发布者ID
 	Content      string         `gorm:"type:text" json:"content"`                       // 文案内容（可为空，纯图片/视频）
 	Images       string         `gorm:"type:varchar(2000);default:''" json:"images"`    // 图片URL列表，JSON数组
 	Videos       string         `gorm:"type:varchar(2000);default:''" json:"videos"`    // 视频URL列表，JSON数组
@@ -25,7 +25,7 @@ type Feed struct {
 	LikeCount    int64          `gorm:"default:0" json:"like_count"`                    // 点赞数
 	CommentCount int64          `gorm:"default:0" json:"comment_count"`                 // 评论数
 	ShareCount   int64          `gorm:"default:0" json:"share_count"`                   // 转发数
-	CreatedAt    time.Time      `gorm:"index:idx_user_created" json:"created_at"`
+	CreatedAt    time.Time      `gorm:"index:idx_user_created;index:idx_feed_created_user,priority:1;index:idx_feed_created" json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 }
@@ -72,8 +72,8 @@ func (Timeline) TableName() string {
 // Like 点赞模型
 type Like struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID    uint      `gorm:"index:idx_like_user_feed,unique;not null" json:"user_id"`
-	FeedID    uint      `gorm:"index:idx_like_user_feed,unique;not null" json:"feed_id"`
+	UserID    uint      `gorm:"index:idx_like_user_feed,unique;index:idx_like_feed_user,priority:2;not null" json:"user_id"`
+	FeedID    uint      `gorm:"index:idx_like_user_feed,unique;index:idx_like_feed_user,priority:1;not null" json:"feed_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -85,9 +85,9 @@ func (Like) TableName() string {
 type Comment struct {
 	ID        uint           `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID    uint           `gorm:"index;not null" json:"user_id"`
-	FeedID    uint           `gorm:"index;not null" json:"feed_id"`
+	FeedID    uint           `gorm:"index:idx_comment_feed_created,priority:1;not null" json:"feed_id"`
 	Content   string         `gorm:"type:varchar(500);not null" json:"content"`
-	CreatedAt time.Time      `json:"created_at"`
+	CreatedAt time.Time      `gorm:"index:idx_comment_feed_created,priority:2" json:"created_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
