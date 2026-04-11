@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"feed/utils"
 	"strings"
 
@@ -12,17 +13,12 @@ const (
 	bearerPrefix        = "Bearer"
 )
 
+var errTokenMissing = errors.New("token missing")
+
 // AuthMiddleware JWT认证中间件
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tokenString, ok := extractBearerToken(c.GetHeader(authorizationHeader))
-		if !ok {
-			utils.Unauthorized(c, "Token格式错误或缺失")
-			c.Abort()
-			return
-		}
-
-		claims, err := utils.ParseToken(tokenString)
+		claims, err := ParseTokenFromRequest(c)
 		if err != nil {
 			utils.Unauthorized(c, "Token无效或已过期")
 			c.Abort()
@@ -64,4 +60,17 @@ func GetCurrentUserID(c *gin.Context) uint {
 // ParseTokenFromQuery 解析 query 中携带的 JWT（WebSocket 场景）。
 func ParseTokenFromQuery(token string) (*utils.Claims, error) {
 	return utils.ParseToken(token)
+}
+
+// ParseTokenFromRequest 统一从请求中提取 token：
+// 1) Authorization: Bearer xxx
+// 2) query: ?token=xxx（WS 场景兜底）
+func ParseTokenFromRequest(c *gin.Context) (*utils.Claims, error) {
+	if tokenString, ok := extractBearerToken(c.GetHeader(authorizationHeader)); ok {
+		return utils.ParseToken(tokenString)
+	}
+	if token := strings.TrimSpace(c.Query("token")); token != "" {
+		return utils.ParseToken(token)
+	}
+	return nil, errTokenMissing
 }

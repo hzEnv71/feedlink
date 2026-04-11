@@ -2,7 +2,9 @@ package realtime
 
 import (
 	"encoding/json"
+	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -13,34 +15,61 @@ type MessageEvent struct {
 	Data any    `json:"data"`
 }
 
+// Client 表示一个在线 WebSocket 连接。
+type Client struct {
+	UserID    uint
+	Conn      *websocket.Conn
+	ExpiresAt time.Time
+	mu        sync.Mutex
+}
+
+func (c *Client) WriteJSON(v any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.WriteJSON(v)
+}
+
+func (c *Client) WriteMessage(messageType int, data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// log.Println("WriteMessage", string(data))
+	return c.Conn.WriteMessage(messageType, data)
+}
+
+func (c *Client) WriteControl(messageType int, data []byte, deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.WriteControl(messageType, data, deadline)
+}
+
 var (
 	hubMu       sync.RWMutex
-	userSockets = map[uint]map[*websocket.Conn]struct{}{}
+	userSockets = map[uint]map[*Client]struct{}{}
 )
 
 // RegisterConn 注册用户 WebSocket 连接。
-func RegisterConn(userID uint, conn *websocket.Conn) {
+func RegisterConn(client *Client) {
 	hubMu.Lock()
 	defer hubMu.Unlock()
-	if _, ok := userSockets[userID]; !ok {
-		userSockets[userID] = map[*websocket.Conn]struct{}{}
+	if _, ok := userSockets[client.UserID]; !ok {
+		userSockets[client.UserID] = map[*Client]struct{}{}
 	}
-	userSockets[userID][conn] = struct{}{}
+	userSockets[client.UserID][client] = struct{}{}
 }
 
 // UnregisterConn 注销用户 WebSocket 连接。
-func UnregisterConn(userID uint, conn *websocket.Conn) {
+func UnregisterConn(client *Client) {
 	hubMu.Lock()
 	defer hubMu.Unlock()
-	if conns, ok := userSockets[userID]; ok {
-		delete(conns, conn)
+	if conns, ok := userSockets[client.UserID]; ok {
+		delete(conns, client)
 		if len(conns) == 0 {
-			delete(userSockets, userID)
+			delete(userSockets, client.UserID)
 		}
 	}
 }
 
-// PushToUser 推送事件到用户所有在线连接。
+// PushToUser 推送事件到用户所有在线连接。（多端）
 func PushToUser(userID uint, event MessageEvent) {
 	hubMu.RLock()
 	conns := userSockets[userID]
@@ -50,7 +79,17 @@ func PushToUser(userID uint, event MessageEvent) {
 	}
 
 	payload, _ := json.Marshal(event)
-	for conn := range conns {
-		_ = conn.WriteMessage(websocket.TextMessage, payload)
+	for client := range conns {
+		if client.ExpiresAt.Before(time.Now()) {
+			_ = client.WriteJSON(MessageEvent{Type: "auth:expired", Data: map[string]any{"message": "token expired"}})
+			_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "token expired"), time.Now().Add(2*time.Second))
+			_ = client.Conn.Close()
+			UnregisterConn(client)
+			continue
+		}
+		if err := client.WriteMessage(websocket.TextMessage, payload); err != nil { //接收方：读取接收者接受的消息（写入消息 前端读取）
+			_ = client.Conn.Close()
+			UnregisterConn(client)
+		}
 	}
 }

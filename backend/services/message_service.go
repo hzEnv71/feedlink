@@ -65,7 +65,7 @@ func (s *MessageService) SendMessage(fromUserID uint, req *SendMessageRequest) (
 	}
 
 	// 实时推送：对方在线时立即收到新消息事件。
-	realtime.PushToUser(req.ToUserID, realtime.MessageEvent{
+	realtime.PushToUser(req.ToUserID, realtime.MessageEvent{ //接收方：读取接收者接受的消息（写入消息 前端读取）
 		Type: "message:new",
 		Data: msg,
 	})

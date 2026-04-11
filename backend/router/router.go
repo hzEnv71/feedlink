@@ -38,14 +38,11 @@ func SetupRouter() *gin.Engine {
 	followHandler := handlers.NewFollowHandler(followService)
 	feedHandler := handlers.NewFeedHandler(feedService)
 	uploadHandler := handlers.NewUploadHandler()
-	messageHandler := handlers.NewMessageHandler(messageService)
 	notificationHandler := handlers.NewNotificationHandler(notificationService)
-	wsHandler := handlers.NewWSHandler()
+	wsHandler := handlers.NewWSHandler(messageService)
 	opsHandler := handlers.NewOpsHandler()
 
 	// API路由组
-	r.GET("/ws/messages", wsHandler.MessageWS)
-
 	api := r.Group("/api")
 	{
 		rl := config.AppConfig.RateLimit
@@ -99,10 +96,8 @@ func SetupRouter() *gin.Engine {
 			authenticated.GET("/feeds/:id/comments", feedHandler.GetComments)
 			authenticated.DELETE("/feeds/:id/comments/:comment_id", feedHandler.DeleteComment)
 
-			// 私信
-			authenticated.POST("/messages", middleware.RateLimitByUser("send_message", rl.SendMessage.Rate, rl.SendMessage.Burst), messageHandler.SendMessage)
-			authenticated.GET("/messages/conversations", messageHandler.GetConversations)
-			authenticated.GET("/messages/:target_id", messageHandler.GetConversationMessages)
+			// 私信（发送/接收都走 WebSocket）
+			authenticated.GET("/ws/messages", wsHandler.MessageWS)
 
 			// 通知中心
 			authenticated.GET("/notifications", notificationHandler.ListNotifications)

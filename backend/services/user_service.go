@@ -221,6 +221,9 @@ func (s *UserService) UpdateProfile(userID uint, req *UpdateProfileRequest) (*mo
 	if err != nil {
 		return nil, errors.New("更新个人资料失败")
 	}
+
+	cache.DeleteUserCache(userID)
+
 	return user, nil
 }
 

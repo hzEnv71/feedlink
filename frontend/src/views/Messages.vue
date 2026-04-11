@@ -12,7 +12,9 @@
           :class="{ active: selectedTargetId === item.target_id }"
           @click="selectConversation(item)"
         >
-          <el-avatar :size="42" :src="item.user?.avatar || ''" class="clickable-avatar" @click.stop="goToUserProfile(item.user?.id)">{{ item.user?.nickname?.charAt(0) || 'U' }}</el-avatar>
+          <el-avatar :size="42" :src="item.user?.avatar || ''" class="clickable-avatar" @click.stop="goToUserProfile(item.user?.id)">
+            {{ item.user?.nickname?.charAt(0) || 'U' }}
+          </el-avatar>
           <div class="conversation-meta">
             <div class="top-row">
               <span class="name">{{ item.user?.nickname || '用户' }}</span>
@@ -29,7 +31,10 @@
 
     <div class="messages-main">
       <template v-if="selectedTargetId">
-        <div class="chat-header">{{ selectedUserName }}</div>
+        <div class="chat-header">
+          <span>{{ selectedUserName }}</span>
+          <span class="ws-state" :class="{ online: wsConnected }">{{ wsConnected ? '实时已连接' : '实时重连中...' }}</span>
+        </div>
         <div class="chat-list" ref="chatListRef">
           <div
             v-for="msg in messages"
@@ -88,76 +93,208 @@ const messages = ref([])
 const inputContent = ref('')
 const sending = ref(false)
 const chatListRef = ref(null)
+const wsConnected = ref(false)
 let ws = null
+let reconnectTimer = null
+let reconnectAttempt = 0
+
+const pendingReqMap = new Map()
+const pendingMessageMap = new Map()
+const MAX_RECONNECT_DELAY_MS = 30000
 
 const currentUser = computed(() => JSON.parse(sessionStorage.getItem('user') || 'null'))
-
 const currentUserId = computed(() => currentUser.value?.id || 0)
 
 onMounted(async () => {
-  await loadConversations()
-  connectWS()
-
   const target = Number(route.query.target || 0)
   if (target) {
     selectedTargetId.value = target
-    const userName = route.query.name ? String(route.query.name) : '私信'
-    selectedUserName.value = userName
-    await loadMessages(target)
+    selectedUserName.value = route.query.name ? String(route.query.name) : '私信'
   }
+  await connectWSWithAuth()
 })
 
 onUnmounted(() => {
+  clearReconnectTimer()
+  closeWS()
+  pendingReqMap.clear()
+})
+
+function makeReqId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
+function closeWS() {
   if (ws) {
+    ws.onopen = null
+    ws.onmessage = null
+    ws.onclose = null
+    ws.onerror = null
     ws.close()
     ws = null
   }
-})
+  wsConnected.value = false
+}
+
+function sendWSRequest(type, data, timeoutMs = 6000) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('ws not connected'))
+  }
+
+  const reqId = makeReqId()
+  const payload = { type, data: { ...(data || {}), req_id: reqId } }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingReqMap.delete(reqId)
+      reject(new Error('request timeout'))
+    }, timeoutMs)
+
+    pendingReqMap.set(reqId, {
+      resolve: (res) => {
+        clearTimeout(timer)
+        resolve(res)
+      },
+      reject: (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    })
+
+    ws.send(JSON.stringify(payload))
+  })
+}
 
 async function loadConversations() {
+  if (!wsConnected.value) return
+
   conversationLoading.value = true
   try {
-    const res = await messageApi.getConversations(1, 50)
-    conversations.value = res.data.list || []
+    const res = await sendWSRequest('message:conversations', { page: 1, page_size: 50 })
+    conversations.value = res?.list || []
 
     if (!selectedTargetId.value && conversations.value.length > 0) {
       selectConversation(conversations.value[0])
     }
-  } catch (e) {
-    // handled by interceptor
   } finally {
     conversationLoading.value = false
   }
 }
 
 async function loadMessages(targetId) {
+  if (!targetId || !wsConnected.value) return
   try {
-    const res = await messageApi.getMessages(targetId, 1, 100)
-    messages.value = (res.data.list || []).slice().reverse()
+    const res = await sendWSRequest('message:history', { target_user_id: targetId, page: 1, page_size: 100 })
+    messages.value = (res?.list || []).slice().reverse()
     await nextTick()
     scrollToBottom()
   } catch (e) {
-    // handled by interceptor
+    // ignore
   }
 }
 
 function selectConversation(item) {
-  selectedTargetId.value = item.target_id
+  selectedTargetId.value = Number(item.target_id)
   selectedUserName.value = item.user?.nickname || '私信'
-  router.replace({ path: '/messages', query: { target: item.target_id, name: selectedUserName.value } })
-  loadMessages(item.target_id)
+  router.replace({ path: '/messages', query: { target: selectedTargetId.value, name: selectedUserName.value } })
+  loadMessages(selectedTargetId.value)
+}
+
+function enrichIncomingMessage(msg) {
+  if (!msg || Number(msg.from_user_id) === Number(currentUserId.value)) return msg
+
+  if (!msg.from_user || !msg.from_user.avatar) {
+    const conv = conversations.value.find((x) => Number(x.target_id) === Number(msg.from_user_id))
+    if (conv?.user) {
+      msg.from_user = { ...msg.from_user, ...conv.user }
+    }
+  }
+  return msg
+}
+
+function upsertConversationPreview(msg, isIncoming) {
+  const currentId = Number(currentUserId.value)
+  const fromUserId = Number(msg.from_user_id)
+  const toUserId = Number(msg.to_user_id)
+  const targetId = fromUserId === currentId ? toUserId : fromUserId
+  if (!targetId) return
+
+  const unreadInc = isIncoming && Number(selectedTargetId.value) !== targetId ? 1 : 0
+
+  const idx = conversations.value.findIndex((x) => Number(x.target_id) === targetId)
+  if (idx >= 0) {
+    const old = conversations.value[idx]
+    const mergedUser = old.user && Object.keys(old.user).length > 0
+      ? old.user
+      : (fromUserId === currentId ? (msg.to_user || {}) : (msg.from_user || {}))
+
+    conversations.value[idx] = {
+      ...old,
+      user: mergedUser,
+      last_msg: msg.content,
+      last_time: msg.created_at,
+      unread: Math.max(0, Number(old.unread) || 0) + unreadInc,
+    }
+  } else {
+    const user = fromUserId === currentId ? (msg.to_user || {}) : (msg.from_user || {})
+    conversations.value.unshift({
+      target_id: targetId,
+      target_name: user.nickname || selectedUserName.value || '用户',
+      user,
+      last_msg: msg.content,
+      last_time: msg.created_at,
+      unread: unreadInc,
+    })
+  }
+
+  conversations.value.sort((a, b) => new Date(b.last_time).getTime() - new Date(a.last_time).getTime())
 }
 
 async function send() {
   const content = inputContent.value.trim()
   if (!content || !selectedTargetId.value) return
 
+  if (!ws || ws.readyState !== WebSocket.OPEN || !wsConnected.value) {
+    ElMessage.error('消息通道未连接，请稍后重试')
+    return
+  }
+
   sending.value = true
   try {
-    await messageApi.sendMessage(selectedTargetId.value, content)
+    const clientMsgId = makeReqId()
+    const pending = {
+      id: `pending-${clientMsgId}`,
+      from_user_id: Number(currentUserId.value),
+      to_user_id: Number(selectedTargetId.value),
+      content,
+      created_at: new Date().toISOString(),
+      from_user: currentUser.value || {},
+      _pending: true,
+      _client_msg_id: clientMsgId,
+    }
+
+    messages.value.push(pending)
+    pendingMessageMap.set(clientMsgId, pending)
+    upsertConversationPreview(pending, false)
+    await nextTick()
+    scrollToBottom()
+
+    ws.send(JSON.stringify({
+      type: 'message:send',
+      data: {
+        to_user_id: selectedTargetId.value,
+        content,
+        client_msg_id: clientMsgId,
+      },
+    }))
     inputContent.value = ''
-    await loadMessages(selectedTargetId.value)
-    await loadConversations()
   } catch (e) {
     ElMessage.error('发送失败')
   } finally {
@@ -165,25 +302,135 @@ async function send() {
   }
 }
 
-// connectWS 建立消息实时通道：收到新消息后刷新会话，当前会话则刷新消息列表。
-function connectWS() {
+async function connectWSWithAuth() {
   const token = sessionStorage.getItem('token')
-  if (!token) return
+  if (!token) {
+    wsConnected.value = false
+    return
+  }
+  connectWS(token)
+}
+
+function connectWS(token) {
+  closeWS()
+  clearReconnectTimer()
+
   ws = messageApi.connectMessageWS(token)
+
+  ws.onopen = async () => {
+    wsConnected.value = true
+    reconnectAttempt = 0
+    await loadConversations()
+    if (selectedTargetId.value) {
+      await loadMessages(selectedTargetId.value)
+    }
+  }
+
+  ws.onclose = () => {
+    wsConnected.value = false
+    scheduleReconnect()
+  }
+
+  ws.onerror = () => {
+    wsConnected.value = false
+  }
+
   ws.onmessage = async (event) => {
     try {
       const payload = JSON.parse(event.data || '{}')
-      if (payload?.type === 'message:new') {
-        await loadConversations()
-        const targetId = payload?.data?.from_user_id
-        if (targetId && Number(targetId) === Number(selectedTargetId.value)) {
-          await loadMessages(selectedTargetId.value)
+      const reqId = payload?.data?.req_id
+
+      if (reqId && pendingReqMap.has(reqId)) {
+        const req = pendingReqMap.get(reqId)
+        pendingReqMap.delete(reqId)
+        req.resolve(payload.data)
+        return
+      }
+
+      if (payload?.type === 'auth:expired') {
+        wsConnected.value = false
+        closeWS()
+        await connectWSWithAuth()
+        return
+      }
+
+      if (payload?.type === 'message:ack') {
+        const msg = payload?.data?.message
+        const clientMsgId = payload?.data?.client_msg_id
+        if (msg) {
+          upsertConversationPreview(msg, false)
+
+          if (clientMsgId && pendingMessageMap.has(clientMsgId)) {
+            const pending = pendingMessageMap.get(clientMsgId)
+            const idx = messages.value.findIndex((x) => x === pending || x._client_msg_id === clientMsgId)
+            if (idx >= 0) {
+              messages.value[idx] = { ...msg, from_user: msg.from_user || currentUser.value || {} }
+            } else {
+              messages.value.push({ ...msg, from_user: msg.from_user || currentUser.value || {} })
+            }
+            pendingMessageMap.delete(clientMsgId)
+          } else if (Number(selectedTargetId.value) === Number(msg.to_user_id) || Number(selectedTargetId.value) === Number(msg.from_user_id)) {
+            messages.value.push({ ...msg, from_user: msg.from_user || currentUser.value || {} })
+          }
+
+          await nextTick()
+          scrollToBottom()
         }
+        return
+      }
+
+      if (payload?.type === 'message:new') {
+        const rawMsg = payload?.data
+        if (rawMsg) {
+          const msg = enrichIncomingMessage(rawMsg)
+          upsertConversationPreview(msg, true)
+          const currentId = Number(currentUserId.value)
+          const fromUserId = Number(msg.from_user_id)
+          const toUserId = Number(msg.to_user_id)
+          const targetId = fromUserId === currentId ? toUserId : fromUserId
+          if (targetId && Number(targetId) === Number(selectedTargetId.value)) {
+            messages.value.push(msg)
+            await nextTick()
+            scrollToBottom()
+          }
+        }
+        return
+      }
+
+      if (payload?.type === 'message:error') {
+        const reqIdFromErr = payload?.data?.req_id
+        if (reqIdFromErr && pendingReqMap.has(reqIdFromErr)) {
+          const req = pendingReqMap.get(reqIdFromErr)
+          pendingReqMap.delete(reqIdFromErr)
+          req.reject(new Error(payload?.data?.message || 'request failed'))
+          return
+        }
+
+        const errClientMsgId = payload?.data?.client_msg_id
+        if (errClientMsgId && pendingMessageMap.has(errClientMsgId)) {
+          const pending = pendingMessageMap.get(errClientMsgId)
+          const idx = messages.value.findIndex((x) => x === pending || x._client_msg_id === errClientMsgId)
+          if (idx >= 0) {
+            messages.value.splice(idx, 1)
+          }
+          pendingMessageMap.delete(errClientMsgId)
+        }
+
+        ElMessage.error(payload?.data?.message || '消息发送失败')
       }
     } catch (e) {
       // ignore parse error
     }
   }
+}
+
+function scheduleReconnect() {
+  clearReconnectTimer()
+  reconnectAttempt += 1
+  const delay = Math.min(1000 * 2 ** (reconnectAttempt - 1), MAX_RECONNECT_DELAY_MS)
+  reconnectTimer = setTimeout(() => {
+    connectWSWithAuth()
+  }, delay)
 }
 
 function scrollToBottom() {
@@ -312,9 +559,20 @@ function formatTime(timeStr) {
   height: 52px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 16px;
   font-weight: 600;
   border-bottom: 1px solid rgba(120, 130, 170, 0.16);
+}
+
+.ws-state {
+  font-size: 12px;
+  color: #d16a6a;
+  font-weight: 500;
+}
+
+.ws-state.online {
+  color: #4c9b61;
 }
 
 .chat-list {

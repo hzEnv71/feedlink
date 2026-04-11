@@ -128,17 +128,8 @@ export const notificationApi = {
 }
 
 export const messageApi = {
-    sendMessage(toUserId, content) {
-        return request.post('/messages', { to_user_id: toUserId, content })
-    },
-    getConversations(page = 1, pageSize = 20) {
-        return request.get('/messages/conversations', { params: { page, page_size: pageSize } })
-    },
-    getMessages(targetUserId, page = 1, pageSize = 30) {
-        return request.get(`/messages/${targetUserId}`, { params: { page, page_size: pageSize } })
-    },
     connectMessageWS(token) {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        return new WebSocket(`${wsProtocol}//${window.location.host}/ws/messages?token=${encodeURIComponent(token)}`)
-    },
+        return new WebSocket(`${wsProtocol}//${window.location.host}/api/ws/messages?token=${encodeURIComponent(token)}`)
+    }
 }
