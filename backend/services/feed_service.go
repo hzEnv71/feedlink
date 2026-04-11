@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"time"
 
-	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )
 
@@ -27,7 +26,6 @@ type FeedService struct {
 	userRepo            repository.UserRepository
 	followRepo          repository.FollowRepository
 	notificationService *NotificationService
-	cacheGroup          singleflight.Group
 }
 
 // NewFeedService 构建 FeedService。
@@ -74,6 +72,7 @@ func (s *FeedService) PublishFeed(userID uint, req *CreateFeedRequest) (*models.
 	if err := s.feedRepo.Create(feed); err != nil {
 		return nil, errors.New("发布失败")
 	}
+	cache.AddFeedID(feed.ID)
 
 	mq.PublishFeed(feed.ID, userID)
 	return feed, nil
@@ -125,6 +124,7 @@ func (s *FeedService) RepostFeed(userID uint, req *RepostFeedRequest) (*models.F
 		return nil, err
 	}
 	tx.Commit()
+	cache.AddFeedID(feed.ID)
 
 	mq.PublishFeed(feed.ID, userID)
 	return feed, nil
@@ -158,8 +158,12 @@ func (s *FeedService) DeleteFeed(feedID, userID uint) error {
 	return nil
 }
 
-// GetFeedByID 获取动态详情：优先读缓存，缓存未命中时 singleflight 合并回源请求。
+// GetFeedByID 获取动态详情：优先读缓存，缓存未命中时 setnx回源请求。
 func (s *FeedService) GetFeedByID(feedID, currentUserID uint) (*models.FeedResponse, error) {
+	if !cache.MightFeedExist(feedID) {
+		return nil, errors.New("动态不存在")
+	}
+
 	if raw, err := cache.GetFeedDetail(feedID); err == nil && raw != "" {
 		var resp models.FeedResponse
 		if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
@@ -172,26 +176,42 @@ func (s *FeedService) GetFeedByID(feedID, currentUserID uint) (*models.FeedRespo
 		}
 	}
 
-	val, err, _ := s.cacheGroup.Do("feed_detail:"+strconv.FormatUint(uint64(feedID), 10), func() (any, error) {
-		feed, dbErr := s.feedRepo.GetByID(feedID)
-		if dbErr != nil {
-			if errors.Is(dbErr, gorm.ErrRecordNotFound) {
-				return nil, errors.New("动态不存在")
+	lockKey := "lock:feed_detail:" + strconv.FormatUint(uint64(feedID), 10)
+	lockToken := strconv.FormatInt(time.Now().UnixNano(), 10)
+	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second)
+	if !locked {
+		for i := 0; i < 8; i++ {
+			time.Sleep(40 * time.Millisecond)
+			if raw, err := cache.GetFeedDetail(feedID); err == nil && raw != "" {
+				var resp models.FeedResponse
+				if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
+					if currentUserID > 0 {
+						if like, likeErr := s.feedRepo.GetLike(currentUserID, feedID); likeErr == nil && like != nil {
+							resp.IsLiked = true
+						}
+					}
+					return &resp, nil
+				}
 			}
-			return nil, dbErr
 		}
-		resp := s.buildFeedResponse(feed, currentUserID)
-		cachePayload := *resp
-		cachePayload.IsLiked = false
-		if b, mErr := json.Marshal(cachePayload); mErr == nil {
-			_ = cache.CacheFeedDetail(feedID, string(b))
-		}
-		return resp, nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	resp, _ := val.(*models.FeedResponse)
+	if locked {
+		defer func() { _ = cache.ReleaseLock(lockKey, lockToken) }()
+	}
+
+	feed, dbErr := s.feedRepo.GetByID(feedID)
+	if dbErr != nil {
+		if errors.Is(dbErr, gorm.ErrRecordNotFound) {
+			return nil, errors.New("动态不存在")
+		}
+		return nil, dbErr
+	}
+	resp := s.buildFeedResponse(feed, currentUserID)
+	cachePayload := *resp
+	cachePayload.IsLiked = false
+	if b, mErr := json.Marshal(cachePayload); mErr == nil {
+		_ = cache.CacheFeedDetail(feedID, string(b))
+	}
 	return resp, nil
 }
 

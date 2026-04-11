@@ -105,6 +105,7 @@ func SetupRouter() *gin.Engine {
 
 			// 运维观测
 			authenticated.GET("/ops/mq/metrics", opsHandler.MQMetrics)
+			authenticated.GET("/ops/cache/metrics", opsHandler.CacheMetrics)
 		}
 	}
 

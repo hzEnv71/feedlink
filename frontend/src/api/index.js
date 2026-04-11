@@ -116,6 +116,9 @@ export const opsApi = {
     getMQMetrics() {
         return request.get('/ops/mq/metrics')
     },
+    getCacheMetrics() {
+        return request.get('/ops/cache/metrics')
+    },
 }
 
 export const notificationApi = {

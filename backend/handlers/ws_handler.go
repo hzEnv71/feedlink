@@ -5,7 +5,6 @@ import (
 	"feed/middleware"
 	"feed/realtime"
 	"feed/services"
-	"log"
 	"math"
 	"net/http"
 	"strings"

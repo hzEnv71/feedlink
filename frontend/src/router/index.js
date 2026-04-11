@@ -59,6 +59,11 @@ const routes = [
                 component: () => import('../views/SearchResult.vue'),
             },
             {
+                path: 'feed/:id',
+                name: 'FeedDetail',
+                component: () => import('../views/FeedDetail.vue'),
+            },
+            {
                 path: 'ops',
                 name: 'OpsPanel',
                 component: () => import('../views/OpsPanel.vue'),

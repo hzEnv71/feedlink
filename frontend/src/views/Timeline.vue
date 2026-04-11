@@ -22,6 +22,7 @@
           @unlike="handleUnlike"
           @delete="handleDelete"
           @click-author="goToProfile"
+          @click-feed="goToFeedDetail"
           @repost-success="loadTimeline"
         />
 
@@ -125,6 +126,11 @@ async function handleDelete(feedId) {
 function goToProfile(userId) {
   if (!userId) return
   router.push(`/profile/${userId}`)
+}
+
+function goToFeedDetail(feedId) {
+  if (!feedId) return
+  router.push(`/feed/${feedId}`)
 }
 </script>
 

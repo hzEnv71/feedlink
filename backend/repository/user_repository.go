@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // UserRepository 定义用户域持久化契约。
@@ -123,9 +124,10 @@ func (r *userMySQLRepository) UpsertVisit(visitorID, targetUserID uint, visitedA
 		TargetUserID: targetUserID,
 		VisitedAt:    visitedAt,
 	}
-	return r.db.Where("visitor_id = ? AND target_user_id = ?", visitorID, targetUserID).
-		Assign(models.Visit{VisitedAt: visitedAt}).
-		FirstOrCreate(&visit).Error
+	return r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "visitor_id"}, {Name: "target_user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"visited_at", "updated_at"}),
+	}).Create(&visit).Error
 }
 
 func (r *userMySQLRepository) ListRecentVisits(targetUserID uint, page, pageSize int) ([]models.Visit, int64, error) {

@@ -82,6 +82,7 @@
             @unlike="handleUnlike"
             @delete="handleDelete"
             @click-author="goToProfile"
+            @click-feed="goToFeedDetail"
             @repost-success="loadFeeds"
           />
 
@@ -406,6 +407,11 @@ function goToProfile(userId) {
 function goToChat() {
   if (!user.value?.id) return
   router.push(`/messages?target=${user.value.id}`)
+}
+
+function goToFeedDetail(feedId) {
+  if (!feedId) return
+  router.push(`/feed/${feedId}`)
 }
 </script>
 

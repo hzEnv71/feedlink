@@ -6,15 +6,15 @@
       </el-avatar>
     </div>
 
-    <div class="moments-main">
-      <div class="name-row" @click="$emit('click-author', feed.author?.id)">
+    <div class="moments-main" @click="emit('click-feed', feed.id)">
+      <div class="name-row" @click.stop="$emit('click-author', feed.author?.id)">
         <span class="nickname">{{ feed.author?.nickname || '未知用户' }}</span>
         <span v-if="feed.author?.is_big_v" class="v-badge">V</span>
       </div>
 
-      <p v-if="feed.content" class="moments-text">{{ feed.content }}</p>
+      <p v-if="feed.content" class="moments-text clickable-feed">{{ feed.content }}</p>
 
-      <div v-if="images.length" class="moments-grid" :class="`grid-${Math.min(images.length, 9)}`">
+      <div v-if="images.length" class="moments-grid" :class="`grid-${Math.min(images.length, 9)}`" @click.stop>
         <el-image
           v-for="(img, idx) in images.slice(0, 9)"
           :key="img + idx"
@@ -27,7 +27,7 @@
         />
       </div>
 
-      <div v-if="videos.length" class="video-wrap">
+      <div v-if="videos.length" class="video-wrap" @click.stop>
         <video v-for="(video, idx) in videos" :key="video + idx" class="feed-video" :src="video" controls preload="metadata" />
       </div>
 
@@ -35,7 +35,7 @@
         <div class="repost-author clickable-user" @click="$emit('click-author', feed.original_feed.author?.id)">@{{ feed.original_feed.author?.nickname || '原作者' }}</div>
         <div class="repost-content">{{ feed.original_feed.content || '转发了一条动态' }}</div>
 
-        <div v-if="originalImages.length" class="repost-grid" :class="`grid-${Math.min(originalImages.length, 9)}`">
+        <div v-if="originalImages.length" class="repost-grid" :class="`grid-${Math.min(originalImages.length, 9)}`" @click.stop>
           <el-image
             v-for="(img, idx) in originalImages.slice(0, 9)"
             :key="img + idx"
@@ -48,7 +48,7 @@
           />
         </div>
 
-        <div v-if="originalVideos.length" class="video-wrap repost-video-wrap">
+        <div v-if="originalVideos.length" class="video-wrap repost-video-wrap" @click.stop>
           <video
             v-for="(video, idx) in originalVideos"
             :key="video + idx"
@@ -60,7 +60,7 @@
         </div>
       </div>
 
-      <div class="meta-row">
+      <div class="meta-row" @click.stop>
         <div class="meta-left">
           <span class="time">{{ formatTime(feed.created_at) }}</span>
           <button v-if="canDeleteFeed" class="inline-delete-btn" type="button" @click="confirmDelete">删除</button>
@@ -148,7 +148,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['like', 'unlike', 'delete', 'click-author', 'repost-success'])
+const emit = defineEmits(['like', 'unlike', 'delete', 'click-author', 'click-feed', 'repost-success'])
 
 const userStore = useUserStore()
 
@@ -371,6 +371,14 @@ function formatTime(timeStr) {
   font-size: 15px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.clickable-feed {
+  cursor: pointer;
+}
+
+.clickable-feed:hover {
+  opacity: 0.9;
 }
 
 .moments-grid,

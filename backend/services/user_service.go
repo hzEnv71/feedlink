@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )
 
@@ -23,7 +22,6 @@ import (
 // - 底层数据访问通过 UserRepository 完成。
 type UserService struct {
 	userRepo repository.UserRepository
-	cacheGrp singleflight.Group
 }
 
 func NewUserService() *UserService {
@@ -86,6 +84,7 @@ func (s *UserService) Register(req *RegisterRequest) (*models.User, error) {
 	if err := s.userRepo.Create(user); err != nil {
 		return nil, errors.New("注册失败")
 	}
+	cache.AddUserID(user.ID)
 
 	return user, nil
 }
@@ -126,6 +125,10 @@ func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
 
 // GetUserProfile 获取用户资料（含是否关注状态）
 func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.UserResponse, error) {
+	if !cache.MightUserExist(targetUserID) {
+		return nil, errors.New("用户不存在")
+	}
+
 	var resp models.UserResponse
 	if raw, err := cache.GetUserInfo(targetUserID); err == nil && raw != "" {
 		if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
@@ -140,21 +143,38 @@ func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.
 		}
 	}
 
-	val, err, _ := s.cacheGrp.Do("user_profile:"+strconv.FormatUint(uint64(targetUserID), 10), func() (any, error) {
-		user, dbErr := s.GetUserByID(targetUserID)
-		if dbErr != nil {
-			return nil, dbErr
+	lockKey := "lock:user_profile:" + strconv.FormatUint(uint64(targetUserID), 10)
+	lockToken := strconv.FormatInt(time.Now().UnixNano(), 10)
+	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second)
+	if !locked {
+		for i := 0; i < 8; i++ {
+			time.Sleep(40 * time.Millisecond)
+			if raw, err := cache.GetUserInfo(targetUserID); err == nil && raw != "" {
+				if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
+					if currentUserID > 0 && currentUserID != targetUserID {
+						isFollowed, _ := cache.IsFollowing(currentUserID, targetUserID)
+						if !isFollowed {
+							isFollowed, _ = s.userRepo.IsFollowing(currentUserID, targetUserID)
+						}
+						resp.IsFollowed = isFollowed
+					}
+					return &resp, nil
+				}
+			}
 		}
-		r := user.ToResponse()
-		if b, mErr := json.Marshal(r); mErr == nil {
-			_ = cache.CacheUserInfo(targetUserID, string(b))
-		}
-		return r, nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	resp = val.(models.UserResponse)
+	if locked {
+		defer func() { _ = cache.ReleaseLock(lockKey, lockToken) }()
+	}
+
+	user, dbErr := s.GetUserByID(targetUserID)
+	if dbErr != nil {
+		return nil, dbErr
+	}
+	resp = user.ToResponse()
+	if b, mErr := json.Marshal(resp); mErr == nil {
+		_ = cache.CacheUserInfo(targetUserID, string(b))
+	}
 
 	if currentUserID > 0 && currentUserID != targetUserID {
 		isFollowed, _ := cache.IsFollowing(currentUserID, targetUserID)

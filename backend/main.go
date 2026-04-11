@@ -37,7 +37,14 @@ func main() {
 	}
 	log.Println("✅ Message queue initialized successfully")
 
-	// 5. 设置路由并启动服务器
+	// 5. 初始化布隆过滤器（防缓存穿透）
+	if err := cache.InitBloomFilters(); err != nil {
+		log.Printf("⚠️ Init bloom filters failed, fallback without bloom: %v", err)
+	} else {
+		log.Println("✅ Bloom filters initialized successfully")
+	}
+
+	// 6. 设置路由并启动服务器
 	r := router.SetupRouter()
 	port := config.AppConfig.Server.Port
 	addr := fmt.Sprintf(":%d", port)

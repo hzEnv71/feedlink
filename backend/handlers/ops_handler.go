@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"feed/cache"
 	"feed/mq"
 	"feed/utils"
 
@@ -16,4 +17,10 @@ func NewOpsHandler() *OpsHandler { return &OpsHandler{} }
 // GET /api/ops/mq/metrics
 func (h *OpsHandler) MQMetrics(c *gin.Context) {
 	utils.Success(c, mq.SnapshotMetrics())
+}
+
+// CacheMetrics 查看缓存命中/失效指标快照。
+// GET /api/ops/cache/metrics
+func (h *OpsHandler) CacheMetrics(c *gin.Context) {
+	utils.Success(c, cache.SnapshotCacheMetrics())
 }

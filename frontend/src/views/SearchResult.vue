@@ -33,6 +33,7 @@
             @like="handleLike"
             @unlike="handleUnlike"
             @click-author="goProfile"
+            @click-feed="goToFeedDetail"
           />
         </div>
       </template>
@@ -137,6 +138,11 @@ async function handleUnlike(feedId) {
     item.is_liked = false
     item.like_count = Math.max((item.like_count || 0) - 1, 0)
   }
+}
+
+function goToFeedDetail(feedId) {
+  if (!feedId) return
+  router.push(`/feed/${feedId}`)
 }
 </script>
 

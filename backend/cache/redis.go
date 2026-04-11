@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -26,6 +27,15 @@ const (
 	KeyFollowers  = "followers:%d"
 	KeyFollowing  = "following:%d"
 	KeyIsBigV     = "bigv:%d"
+)
+
+var (
+	metricFeedCacheHit    uint64
+	metricFeedCacheMiss   uint64
+	metricUserCacheHit    uint64
+	metricUserCacheMiss   uint64
+	metricFeedCacheDelete uint64
+	metricUserCacheDelete uint64
 )
 
 // InitRedis 初始化 Redis 客户端并执行连通性探测。
@@ -100,13 +110,25 @@ func CacheFeedDetail(feedID uint, data string) error {
 
 func GetFeedDetail(feedID uint) (string, error) {
 	key := fmt.Sprintf(KeyFeedDetail, feedID)
-	return RedisClient.Get(Ctx, key).Result()
+	v, err := RedisClient.Get(Ctx, key).Result()
+	if err == redis.Nil {
+		atomic.AddUint64(&metricFeedCacheMiss, 1)
+		return "", err
+	}
+	if err == nil {
+		atomic.AddUint64(&metricFeedCacheHit, 1)
+	}
+	return v, err
 }
 
 // DeleteFeedDetail 主动失效动态详情缓存，用于写操作后的强一致刷新。
 func DeleteFeedDetail(feedID uint) error {
 	key := fmt.Sprintf(KeyFeedDetail, feedID)
-	return RedisClient.Del(Ctx, key).Err()
+	err := RedisClient.Del(Ctx, key).Err()
+	if err == nil {
+		atomic.AddUint64(&metricFeedCacheDelete, 1)
+	}
+	return err
 }
 
 // CacheUserInfo 缓存用户资料（带随机抖动，防缓存雪崩）。
@@ -118,12 +140,24 @@ func CacheUserInfo(userID uint, data string) error {
 
 func GetUserInfo(userID uint) (string, error) {
 	key := fmt.Sprintf(KeyUserInfo, userID)
-	return RedisClient.Get(Ctx, key).Result()
+	v, err := RedisClient.Get(Ctx, key).Result()
+	if err == redis.Nil {
+		atomic.AddUint64(&metricUserCacheMiss, 1)
+		return "", err
+	}
+	if err == nil {
+		atomic.AddUint64(&metricUserCacheHit, 1)
+	}
+	return v, err
 }
 
 func DeleteUserCache(userID uint) error {
 	key := fmt.Sprintf(KeyUserInfo, userID)
-	return RedisClient.Del(Ctx, key).Err()
+	err := RedisClient.Del(Ctx, key).Err()
+	if err == nil {
+		atomic.AddUint64(&metricUserCacheDelete, 1)
+	}
+	return err
 }
 
 func SetFollowers(userID uint, followerIDs []any) error {
@@ -232,4 +266,31 @@ func withJitter(baseTTL, maxJitter time.Duration) time.Duration {
 	}
 	jitter := time.Duration(rand.Int63n(int64(maxJitter)))
 	return baseTTL + jitter
+}
+
+// SnapshotCacheMetrics 返回缓存命中与失效指标快照。
+func SnapshotCacheMetrics() map[string]uint64 {
+	feedHit := atomic.LoadUint64(&metricFeedCacheHit)
+	feedMiss := atomic.LoadUint64(&metricFeedCacheMiss)
+	userHit := atomic.LoadUint64(&metricUserCacheHit)
+	userMiss := atomic.LoadUint64(&metricUserCacheMiss)
+
+	calcHitRatioBP := func(hit, miss uint64) uint64 {
+		total := hit + miss
+		if total == 0 {
+			return 0
+		}
+		return hit * 10000 / total
+	}
+
+	return map[string]uint64{
+		"feed_cache_hit":           feedHit,
+		"feed_cache_miss":          feedMiss,
+		"feed_cache_hit_ratio_bp":  calcHitRatioBP(feedHit, feedMiss),
+		"feed_cache_delete":        atomic.LoadUint64(&metricFeedCacheDelete),
+		"user_cache_hit":           userHit,
+		"user_cache_miss":          userMiss,
+		"user_cache_hit_ratio_bp":  calcHitRatioBP(userHit, userMiss),
+		"user_cache_delete":        atomic.LoadUint64(&metricUserCacheDelete),
+	}
 }
