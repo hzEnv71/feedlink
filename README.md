@@ -11,6 +11,180 @@
 - Redis 缓存与令牌桶限流
 
 ---
+
+## 系统架构图
+
+```mermaid
+flowchart TB
+    U[用户 / 浏览器] --> FE[前端 Vue3]
+    FE --> API[后端 API / Router / Handler]
+    API --> MW[Middleware 鉴权 / 限流]
+    MW --> SVC[Service 业务层]
+    SVC --> DB[(MySQL)]
+    SVC --> R[(Redis)]
+    SVC --> MQ[(RabbitMQ)]
+    SVC --> WS[WebSocket 实时推送]
+    MQ --> C[消费者 / 异步任务]
+    C --> DB
+    C --> R
+```
+
+## 登录与鉴权流程
+
+```mermaid
+sequenceDiagram
+    participant F as 前端
+    participant A as Auth API
+    participant M as Middleware
+    participant S as Service
+    participant D as MySQL
+
+    F->>A: 提交账号密码
+    A->>S: 调用登录逻辑
+    S->>D: 查询用户与校验密码
+    D-->>S: 返回用户信息
+    S-->>A: 签发 JWT
+    A-->>F: 返回 token
+    F->>M: 后续请求携带 token
+    M->>M: 校验 token 有效性
+    M-->>F: 放行或返回 401
+```
+
+## 发布动态流程
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端
+    participant H as Handler
+    participant S as Service
+    participant D as MySQL
+    participant R as Redis
+    participant Q as RabbitMQ
+
+    U->>F: 点击发布
+    F->>H: 提交动态内容
+    H->>H: 参数校验
+    H->>S: 进入业务层
+    S->>D: 写入动态正文
+    D-->>S: 返回 feed_id
+    S->>R: 失效/更新缓存
+    S->>S: 判断是否大 V
+    alt 普通用户
+        S->>Q: 推送分发事件
+    else 大 V
+        S->>D: 写入 outbox
+    end
+    S-->>H: 返回成功
+    H-->>F: 响应发布结果
+```
+
+## 时间线推拉混合流程
+
+```mermaid
+flowchart TD
+    A[用户打开首页] --> B[请求 /timeline]
+    B --> C{Redis 是否命中}
+    C -- 是 --> D[直接返回缓存结果]
+    C -- 否 --> E[回源 MySQL / inbox / outbox]
+    E --> F[合并 own + push + pull]
+    F --> G[去重 / 排序 / 游标分页]
+    G --> H[返回前端]
+```
+
+## 私信与实时消息流程
+
+```mermaid
+flowchart TD
+    A[用户 A 发送消息] --> B[消息写入数据库]
+    B --> C{接收者是否在线}
+    C -- 在线 --> D[WebSocket 立即推送]
+    C -- 离线 --> E[消息保留在数据库]
+    E --> F[用户下次上线拉取未读消息]
+```
+
+## MQ 重试与死信队列
+
+```mermaid
+flowchart TD
+    P[生产者] --> M[主队列]
+    M --> C[消费者]
+    C -->|成功| OK[结束]
+    C -->|可重试失败| R[重试队列]
+    C -->|超过阈值| DLQ[死信队列 DLQ]
+    R --> M
+```
+
+## 关注关系图
+
+```mermaid
+flowchart LR
+    U1[用户 A] -->|关注| U2[用户 B]
+    U1 -->|取关| U3[关系解除]
+    U2 -->|粉丝列表| S1[(MySQL / Redis)]
+    U1 -->|关注列表| S1
+    S1 -->|是否已关注| UI[前端状态展示]
+```
+
+## 点赞 / 评论链路图
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端
+    participant H as Handler
+    participant S as Service
+    participant D as MySQL
+    participant R as Redis
+    participant Q as RabbitMQ
+
+    U->>F: 点赞 / 评论
+    F->>H: 提交请求
+    H->>S: 调用业务层
+    S->>D: 写入点赞/评论记录
+    D-->>S: 返回结果
+    S->>R: 失效相关缓存
+    S->>Q: 发送通知事件
+    Q-->>S: 异步消费通知
+    S-->>H: 返回成功
+    H-->>F: 前端更新状态
+```
+
+## Redis 缓存命中 / 回源图
+
+```mermaid
+flowchart TD
+    A[请求动态详情 / 用户资料] --> B{Redis 是否命中}
+    B -- 命中 --> C[直接返回缓存]
+    B -- 未命中 --> D[回源 MySQL]
+    D --> E[构建响应数据]
+    E --> F[回填 Redis]
+    F --> G[返回前端]
+```
+
+## 令牌桶限流图
+
+```mermaid
+flowchart TD
+    A[请求进入] --> B[读取令牌桶状态]
+    B --> C{是否有令牌}
+    C -- 有 --> D[放行请求]
+    C -- 无 --> E[拒绝 / 降级 / 等待]
+    D --> F[按速率补充令牌]
+```
+
+## 主要业务链路图
+
+```mermaid
+flowchart LR
+    A[注册 / 登录] --> B[关注 / 取关]
+    B --> C[发布动态]
+    C --> D[时间线分发]
+    C --> E[点赞 / 评论 / 转发]
+    E --> F[通知中心]
+    F --> G[WebSocket 实时推送]
+```
+
 ## 界面截图
 
 ![图片的描述](./pic/屏幕截图%202026-04-10%20204004.png)
