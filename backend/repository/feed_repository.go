@@ -2,6 +2,7 @@ package repository
 
 import (
 	"feed/models"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -26,6 +27,8 @@ type FeedRepository interface {
 	ListByUserID(userID uint, page, pageSize int) ([]models.Feed, int64, error)
 	ListRecentByUserID(userID uint, limit int) ([]models.Feed, error)
 	ListByIDs(feedIDs []uint) ([]models.Feed, error)
+	ListByIDsBeforeCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error)
+	ListByIDsNewerThanCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error)
 	SearchByKeyword(keyword string, page, pageSize int) ([]models.Feed, int64, error)
 
 	CreateTimeline(tx *gorm.DB, timeline *models.Timeline) error
@@ -129,6 +132,30 @@ func (r *feedMySQLRepository) ListByIDs(feedIDs []uint) ([]models.Feed, error) {
 		return feeds, nil
 	}
 	if err := r.db.Where("id IN ?", feedIDs).Find(&feeds).Error; err != nil {
+		return nil, err
+	}
+	return feeds, nil
+}
+
+func (r *feedMySQLRepository) ListByIDsBeforeCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error) {
+	var feeds []models.Feed
+	if len(feedIDs) == 0 {
+		return feeds, nil
+	}
+	if err := r.db.Where("id IN ? AND (created_at < ? OR (created_at = ? AND id < ?))", feedIDs, cursorTime, cursorTime, cursorID).
+		Order("created_at DESC, id DESC").Find(&feeds).Error; err != nil {
+		return nil, err
+	}
+	return feeds, nil
+}
+
+func (r *feedMySQLRepository) ListByIDsNewerThanCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error) {
+	var feeds []models.Feed
+	if len(feedIDs) == 0 {
+		return feeds, nil
+	}
+	if err := r.db.Where("id IN ? AND (created_at > ? OR (created_at = ? AND id > ?))", feedIDs, cursorTime, cursorTime, cursorID).
+		Order("created_at DESC, id DESC").Find(&feeds).Error; err != nil {
 		return nil, err
 	}
 	return feeds, nil

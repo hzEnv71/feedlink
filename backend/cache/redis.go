@@ -82,6 +82,15 @@ func GetInbox(userID uint, offset, limit int64) ([]string, error) {
 	return getSortedSetByRangeDesc(key, offset, limit)
 }
 
+func GetInboxByScore(userID uint, minTime, maxTime float64, limit int64) ([]string, error) {
+	key := fmt.Sprintf(KeyInbox, userID)
+	return RedisClient.ZRevRangeByScore(Ctx, key, &redis.ZRangeBy{
+		Min:   fmt.Sprintf("%f", minTime),
+		Max:   fmt.Sprintf("%f", maxTime),
+		Count: limit,
+	}).Result()
+}
+
 func GetOutbox(userID uint, offset, limit int64) ([]string, error) {
 	key := fmt.Sprintf(KeyOutbox, userID)
 	return getSortedSetByRangeDesc(key, offset, limit)
@@ -284,13 +293,13 @@ func SnapshotCacheMetrics() map[string]uint64 {
 	}
 
 	return map[string]uint64{
-		"feed_cache_hit":           feedHit,
-		"feed_cache_miss":          feedMiss,
-		"feed_cache_hit_ratio_bp":  calcHitRatioBP(feedHit, feedMiss),
-		"feed_cache_delete":        atomic.LoadUint64(&metricFeedCacheDelete),
-		"user_cache_hit":           userHit,
-		"user_cache_miss":          userMiss,
-		"user_cache_hit_ratio_bp":  calcHitRatioBP(userHit, userMiss),
-		"user_cache_delete":        atomic.LoadUint64(&metricUserCacheDelete),
+		"feed_cache_hit":          feedHit,
+		"feed_cache_miss":         feedMiss,
+		"feed_cache_hit_ratio_bp": calcHitRatioBP(feedHit, feedMiss),
+		"feed_cache_delete":       atomic.LoadUint64(&metricFeedCacheDelete),
+		"user_cache_hit":          userHit,
+		"user_cache_miss":         userMiss,
+		"user_cache_hit_ratio_bp": calcHitRatioBP(userHit, userMiss),
+		"user_cache_delete":       atomic.LoadUint64(&metricUserCacheDelete),
 	}
 }

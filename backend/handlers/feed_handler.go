@@ -4,8 +4,8 @@ import (
 	"feed/middleware"
 	"feed/services"
 	"feed/utils"
-	"strings"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -164,11 +164,8 @@ func (h *FeedHandler) GetUserFeeds(c *gin.Context) {
 func (h *FeedHandler) GetTimeline(c *gin.Context) {
 	currentUserID := middleware.GetCurrentUserID(c)
 
-	cursor, _ := strconv.Atoi(c.DefaultQuery("cursor", "0"))
+	cursor := c.DefaultQuery("cursor", "")
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if cursor < 0 {
-		cursor = 0
-	}
 	if pageSize < 1 || pageSize > 50 {
 		pageSize = 20
 	}

@@ -8,8 +8,8 @@ import (
 	"feed/mq"
 	"feed/repository"
 	"log"
-	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -87,15 +87,26 @@ func (s *FeedService) UpdateFeed(feedID, userID uint, req *UpdateFeedRequest) (*
 		return nil, err
 	}
 
-	updates := map[string]any{"content": req.Content}
+	updates := make(map[string]any)
+	if req.Content != "" {
+		updates["content"] = req.Content
+	}
 	if feed.FeedType == models.FeedTypeOriginal {
-		updates["images"] = req.Images
-		updates["videos"] = req.Videos
+		if req.Images != "" {
+			updates["images"] = req.Images
+		}
+		if req.Videos != "" {
+			updates["videos"] = req.Videos
+		}
+	}
+	if len(updates) == 0 {
+		return nil, errors.New("请至少填写一个要更新的字段")
 	}
 	if err := s.feedRepo.UpdateByID(feedID, updates); err != nil {
 		return nil, errors.New("编辑失败")
 	}
 	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err()
+	_ = cache.DeleteFeedDetail(feedID)
 	return s.feedRepo.GetByID(feedID)
 }
 
@@ -123,7 +134,9 @@ func (s *FeedService) RepostFeed(userID uint, req *RepostFeedRequest) (*models.F
 		tx.Rollback()
 		return nil, err
 	}
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		return nil, errors.New("转发失败")
+	}
 	cache.AddFeedID(feed.ID)
 
 	mq.PublishFeed(feed.ID, userID)
@@ -144,10 +157,10 @@ func (s *FeedService) DeleteFeed(feedID, userID uint) error {
 	}
 	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err()
 
-	go func() {
-		key := strconv.FormatUint(uint64(feedID), 10)
-		_ = cache.RedisClient.ZRem(cache.Ctx, "outbox:"+strconv.FormatUint(uint64(userID), 10), key).Err()
+	key := strconv.FormatUint(uint64(feedID), 10)
+	_ = cache.RedisClient.ZRem(cache.Ctx, "outbox:"+strconv.FormatUint(uint64(userID), 10), key).Err()
 
+	go func() {
 		timelines, _ := s.feedRepo.ListTimelinesByFeedID(feedID)
 		for _, tl := range timelines {
 			cache.RemoveFromInbox(tl.UserID, feedID)
@@ -224,79 +237,99 @@ func (s *FeedService) GetUserFeeds(userID uint, page, pageSize int, currentUserI
 	return responses, total, nil
 }
 
-// GetTimeline 获取时间线（推拉混合聚合）：
-// - own: 本人动态
-// - push: 收件箱（普通用户写扩散）
-// - pull: 关注大V发件箱（读时拉取）
-// 最终合并去重后按时间排序并分页返回。
-// GetTimelineByCursor 使用游标分页获取时间线。
-// cursor 语义：当前聚合结果中的起始索引（首次传 0）。
-func (s *FeedService) GetTimelineByCursor(userID uint, cursor, pageSize int) ([]models.FeedResponse, int, bool, error) {
-	if cursor < 0 {
-		cursor = 0
-	}
+// GetTimeline 获取时间线（真正游标分页）。
+// cursor 语义："created_at_unix_nano|feed_id"，首次传空字符串。
+// 返回 nextCursor 继续向更旧内容翻页。
+func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize int) ([]models.FeedResponse, string, bool, error) {
 	if pageSize <= 0 {
 		pageSize = 20
 	}
-	limit := int64(pageSize)
-
-	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, int(limit)+20)
-	ownFeedIDs := make([]uint, 0, len(ownFeeds))
-	for _, f := range ownFeeds {
-		ownFeedIDs = append(ownFeedIDs, f.ID)
+	if pageSize > 50 {
+		pageSize = 50
 	}
 
-	inboxFeedIDs, err := cache.GetInbox(userID, 0, limit+50)
+	cursorTime, cursorID := parseTimelineCursor(cursor)
+	prefetchSize := pageSize + 1
+	candidateIDs := make([]uint, 0, prefetchSize*8)
+
+	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, prefetchSize*4)
+	candidateIDs = append(candidateIDs, s.filterTimelineCandidates(ownFeeds, cursorTime, cursorID)...)
+
+	if inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(cursorTime.UnixNano()), int64(prefetchSize*6)); err == nil {
+		for _, idStr := range inboxIDs {
+			id, _ := strconv.ParseUint(idStr, 10, 64)
+			if id > 0 {
+				candidateIDs = append(candidateIDs, uint(id))
+			}
+		}
+	} else {
+		log.Printf("Get inbox from redis failed: %v", err)
+	}
+
+	candidateIDs = append(candidateIDs, s.pullBigVFeeds(userID, int64(prefetchSize*2), cursorTime)...)
+	candidateIDs = s.uniqueUint(candidateIDs)
+	if len(candidateIDs) == 0 {
+		return []models.FeedResponse{}, cursor, false, nil
+	}
+
+	feeds, err := s.feedRepo.ListByIDsBeforeCursor(candidateIDs, cursorTime, cursorID)
 	if err != nil {
-		log.Printf("Get inbox from redis failed: %v, fallback to DB", err)
-	}
-	pushFeedIDs := make([]uint, 0, len(inboxFeedIDs))
-	for _, idStr := range inboxFeedIDs {
-		id, _ := strconv.ParseUint(idStr, 10, 64)
-		if id > 0 {
-			pushFeedIDs = append(pushFeedIDs, uint(id))
-		}
+		return nil, cursor, false, err
 	}
 
-	if len(pushFeedIDs) == 0 {
-		timelines, _ := s.feedRepo.ListTimelineByUserID(userID, int(limit)+50)
-		for _, tl := range timelines {
-			pushFeedIDs = append(pushFeedIDs, tl.FeedID)
-		}
-	}
-
-	pullFeedIDs := s.pullBigVFeeds(userID, limit)
-	allFeedIDs := s.mergeAndDedup(ownFeedIDs, pushFeedIDs, pullFeedIDs)
-	if len(allFeedIDs) == 0 {
+	pageFeeds, hasMore := pickTimelinePage(feeds, pageSize)
+	if len(pageFeeds) == 0 {
 		return []models.FeedResponse{}, cursor, false, nil
 	}
-
-	feeds, _ := s.feedRepo.ListByIDs(allFeedIDs)
-	sort.Slice(feeds, func(i, j int) bool { return feeds[i].CreatedAt.After(feeds[j].CreatedAt) })
-
-	start := cursor
-	if start >= len(feeds) {
-		return []models.FeedResponse{}, cursor, false, nil
-	}
-	end := start + int(limit)
-	if end > len(feeds) {
-		end = len(feeds)
-	}
-	pageFeeds := feeds[start:end]
 
 	responses := s.buildFeedResponses(pageFeeds, userID)
-	nextCursor := end
-	hasMore := end < len(feeds)
+	last := pageFeeds[len(pageFeeds)-1]
+	nextCursor := buildTimelineCursor(last.CreatedAt, last.ID)
+	if len(feeds) > len(pageFeeds) {
+		hasMore = true
+	}
+	if !hasMore && len(pageFeeds) == pageSize {
+		hasMore = s.hasMoreTimelineAfter(userID, last.CreatedAt, last.ID)
+	}
 	return responses, nextCursor, hasMore, nil
+}
+
+func (s *FeedService) hasMoreTimelineAfter(userID uint, lastTime time.Time, lastID uint) bool {
+	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, 100)
+	ownIDs := s.filterTimelineCandidates(ownFeeds, lastTime, lastID)
+	if len(ownIDs) > 0 {
+		return true
+	}
+
+	inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(lastTime.UnixNano()), 100)
+	if err != nil || len(inboxIDs) == 0 {
+		return false
+	}
+
+	ids := make([]uint, 0, len(inboxIDs))
+	for _, idStr := range inboxIDs {
+		id, _ := strconv.ParseUint(idStr, 10, 64)
+		if id > 0 {
+			ids = append(ids, uint(id))
+		}
+	}
+	feeds, err := s.feedRepo.ListByIDsNewerThanCursor(ids, lastTime, lastID)
+	if err != nil {
+		return false
+	}
+	return len(feeds) > 0
 }
 
 // pullBigVFeeds 拉取当前用户所关注大V的发件箱内容。
 // 若 Redis 不可用则回源 DB 最近动态，保证可用性优先。
 // pullBigVFeeds 拉取当前用户关注的大V发件箱动态。
 // 若 Redis outbox 缺失，则回源数据库兜底。
-func (s *FeedService) pullBigVFeeds(userID uint, limit int64) []uint {
+func (s *FeedService) pullBigVFeeds(userID uint, limit int64, cursorTime time.Time) []uint {
 	follows, _ := s.followRepo.ListFollowingAll(userID)
-	var pullFeedIDs []uint
+	seen := make(map[uint]bool)
+	pullFeedIDs := make([]uint, 0, len(follows)*int(limit))
+	cursorNano := float64(cursorTime.UnixNano())
+
 	for _, follow := range follows {
 		isBigV, err := cache.IsBigV(follow.FollowedID)
 		if err != nil {
@@ -308,21 +341,28 @@ func (s *FeedService) pullBigVFeeds(userID uint, limit int64) []uint {
 			continue
 		}
 
-		outboxIDs, err := cache.GetOutbox(follow.FollowedID, 0, limit)
-		if err != nil {
+		appendFeedID := func(id uint) {
+			if id == 0 || seen[id] {
+				return
+			}
+			seen[id] = true
+			pullFeedIDs = append(pullFeedIDs, id)
+		}
+
+		outboxIDs, err := cache.GetOutboxByScore(follow.FollowedID, -1, cursorNano, limit)
+		if err != nil || len(outboxIDs) == 0 {
+			feeds, _ := s.feedRepo.ListRecentByUserID(follow.FollowedID, int(limit))
+			for _, feed := range feeds {
+				if feed.CreatedAt.After(cursorTime) || feed.CreatedAt.Equal(cursorTime) {
+					continue
+				}
+				appendFeedID(feed.ID)
+			}
 			continue
 		}
 		for _, idStr := range outboxIDs {
 			id, _ := strconv.ParseUint(idStr, 10, 64)
-			if id > 0 {
-				pullFeedIDs = append(pullFeedIDs, uint(id))
-			}
-		}
-		if len(outboxIDs) == 0 {
-			feeds, _ := s.feedRepo.ListRecentByUserID(follow.FollowedID, int(limit))
-			for _, feed := range feeds {
-				pullFeedIDs = append(pullFeedIDs, feed.ID)
-			}
+			appendFeedID(uint(id))
 		}
 	}
 	return pullFeedIDs
@@ -337,6 +377,18 @@ func (s *FeedService) mergeAndDedup(idGroups ...[]uint) []uint {
 				seen[id] = true
 				result = append(result, id)
 			}
+		}
+	}
+	return result
+}
+
+func (s *FeedService) uniqueUint(values []uint) []uint {
+	seen := make(map[uint]bool)
+	result := make([]uint, 0, len(values))
+	for _, v := range values {
+		if !seen[v] {
+			seen[v] = true
+			result = append(result, v)
 		}
 	}
 	return result
@@ -386,22 +438,10 @@ func (s *FeedService) buildFeedResponses(feeds []models.Feed, currentUserID uint
 	for _, feed := range feeds {
 		userIDs = append(userIDs, feed.UserID)
 	}
-	users, _ := s.userRepo.ListByIDs(userIDs)
-	userMap := map[uint]models.User{}
-	for _, u := range users {
-		userMap[u.ID] = u
-	}
 
 	feedIDs := make([]uint, 0, len(feeds))
 	for _, feed := range feeds {
 		feedIDs = append(feedIDs, feed.ID)
-	}
-	likedMap := map[uint]bool{}
-	if currentUserID > 0 {
-		likes, _ := s.feedRepo.ListLikesByUserAndFeedIDs(currentUserID, feedIDs)
-		for _, like := range likes {
-			likedMap[like.FeedID] = true
-		}
 	}
 
 	originalIDs := make([]uint, 0)
@@ -410,17 +450,33 @@ func (s *FeedService) buildFeedResponses(feeds []models.Feed, currentUserID uint
 			originalIDs = append(originalIDs, *feed.OriginalID)
 		}
 	}
-	originalMap := map[uint]models.Feed{}
+
+	originals := make([]models.Feed, 0)
 	if len(originalIDs) > 0 {
-		originals, _ := s.feedRepo.ListByIDs(originalIDs)
+		originals, _ = s.feedRepo.ListByIDs(s.uniqueUint(originalIDs))
 		for _, orig := range originals {
-			originalMap[orig.ID] = orig
 			userIDs = append(userIDs, orig.UserID)
 		}
-		origUsers, _ := s.userRepo.ListByIDs(userIDs)
-		for _, u := range origUsers {
-			userMap[u.ID] = u
+	}
+
+	userIDs = s.uniqueUint(userIDs)
+	users, _ := s.userRepo.ListByIDs(userIDs)
+	userMap := map[uint]models.User{}
+	for _, u := range users {
+		userMap[u.ID] = u
+	}
+
+	likedMap := map[uint]bool{}
+	if currentUserID > 0 {
+		likes, _ := s.feedRepo.ListLikesByUserAndFeedIDs(currentUserID, feedIDs)
+		for _, like := range likes {
+			likedMap[like.FeedID] = true
 		}
+	}
+
+	originalMap := map[uint]models.Feed{}
+	for _, orig := range originals {
+		originalMap[orig.ID] = orig
 	}
 
 	responses := make([]models.FeedResponse, 0, len(feeds))
@@ -461,7 +517,9 @@ func (s *FeedService) LikeFeed(userID, feedID uint) error {
 		tx.Rollback()
 		return err
 	}
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		return errors.New("点赞失败")
+	}
 	_ = cache.DeleteFeedDetail(feedID)
 	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
 		s.notificationService.CreateLikeNotification(userID, feed.UserID, feedID)
@@ -484,7 +542,9 @@ func (s *FeedService) UnlikeFeed(userID, feedID uint) error {
 		tx.Rollback()
 		return err
 	}
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		return errors.New("取消点赞失败")
+	}
 	_ = cache.DeleteFeedDetail(feedID)
 	return nil
 }
@@ -504,7 +564,9 @@ func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.
 		tx.Rollback()
 		return nil, err
 	}
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		return nil, errors.New("评论失败")
+	}
 	_ = cache.DeleteFeedDetail(feedID)
 	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
 		s.notificationService.CreateCommentNotification(userID, feed.UserID, feedID, content)
@@ -558,7 +620,9 @@ func (s *FeedService) DeleteComment(currentUserID, feedID, commentID uint) error
 		tx.Rollback()
 		return err
 	}
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		return errors.New("删除评论失败")
+	}
 	_ = cache.DeleteFeedDetail(feedID)
 	return nil
 }
@@ -599,4 +663,48 @@ func (s *FeedService) SearchFeeds(keyword string, page, pageSize int, currentUse
 		return nil, 0, err
 	}
 	return s.buildFeedResponses(feeds, currentUserID), total, nil
+}
+
+func parseTimelineCursor(cursor string) (time.Time, uint) {
+	if strings.TrimSpace(cursor) == "" {
+		return time.Unix(1<<62, 0), ^uint(0)
+	}
+	parts := strings.Split(cursor, "|")
+	if len(parts) != 2 {
+		return time.Unix(1<<62, 0), ^uint(0)
+	}
+	nano, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return time.Unix(1<<62, 0), ^uint(0)
+	}
+	id, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return time.Unix(1<<62, 0), ^uint(0)
+	}
+	return time.Unix(0, nano), uint(id)
+}
+
+func buildTimelineCursor(createdAt time.Time, id uint) string {
+	return strconv.FormatInt(createdAt.UnixNano(), 10) + "|" + strconv.FormatUint(uint64(id), 10)
+}
+
+func (s *FeedService) filterTimelineCandidates(feeds []models.Feed, cursorTime time.Time, cursorID uint) []uint {
+	ids := make([]uint, 0, len(feeds))
+	for _, feed := range feeds {
+		if feed.CreatedAt.After(cursorTime) || (feed.CreatedAt.Equal(cursorTime) && feed.ID >= cursorID) {
+			continue
+		}
+		ids = append(ids, feed.ID)
+	}
+	return ids
+}
+
+func pickTimelinePage(feeds []models.Feed, pageSize int) ([]models.Feed, bool) {
+	if len(feeds) == 0 {
+		return []models.Feed{}, false
+	}
+	if len(feeds) <= pageSize {
+		return feeds, false
+	}
+	return feeds[:pageSize], true
 }
