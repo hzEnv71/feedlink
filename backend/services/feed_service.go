@@ -666,25 +666,29 @@ func (s *FeedService) SearchFeeds(keyword string, page, pageSize int, currentUse
 }
 
 func parseTimelineCursor(cursor string) (time.Time, uint) {
+	maxTimelineTime := time.Date(9999, 12, 30, 23, 59, 59, 999999999, time.UTC)
 	if strings.TrimSpace(cursor) == "" {
-		return time.Unix(1<<62, 0), ^uint(0)
+		return maxTimelineTime, ^uint(0)
 	}
 	parts := strings.Split(cursor, "|")
 	if len(parts) != 2 {
-		return time.Unix(1<<62, 0), ^uint(0)
+		return maxTimelineTime, ^uint(0)
 	}
 	nano, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		return time.Unix(1<<62, 0), ^uint(0)
+		return maxTimelineTime, ^uint(0)
 	}
 	id, err := strconv.ParseUint(parts[1], 10, 64)
 	if err != nil {
-		return time.Unix(1<<62, 0), ^uint(0)
+		return maxTimelineTime, ^uint(0)
 	}
 	return time.Unix(0, nano), uint(id)
 }
 
 func buildTimelineCursor(createdAt time.Time, id uint) string {
+	if createdAt.IsZero() {
+		createdAt = time.Date(9999, 12, 30, 23, 59, 59, 999999999, time.UTC)
+	}
 	return strconv.FormatInt(createdAt.UnixNano(), 10) + "|" + strconv.FormatUint(uint64(id), 10)
 }
 

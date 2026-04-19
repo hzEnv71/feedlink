@@ -46,8 +46,8 @@ const router = useRouter()
 const feeds = ref([])
 const loading = ref(false)
 const loadingMore = ref(false)
-// 游标分页状态：cursor 从 0 开始，服务端返回 next_cursor。
-const cursor = ref(0)
+// 游标分页状态：cursor 使用 "created_at_unix_nano|feed_id" 格式，首次为空字符串。
+const cursor = ref('')
 const pageSize = 20
 const hasMore = ref(true)
 
@@ -59,10 +59,10 @@ onMounted(() => {
 async function loadTimeline() {
   loading.value = true
   try {
-    const res = await feedApi.getTimeline(0, pageSize)
+    const res = await feedApi.getTimeline('', pageSize)
     feeds.value = res.data.list || []
     hasMore.value = !!res.data.has_more
-    cursor.value = Number(res.data.next_cursor || 0)
+    cursor.value = res.data.next_cursor || ''
   } catch (e) {
     // handled by interceptor
   } finally {
@@ -72,13 +72,16 @@ async function loadTimeline() {
 
 // loadMore 使用 next_cursor 继续拉取后续数据。
 async function loadMore() {
-  if (!hasMore.value) return
+  if (!hasMore.value || loadingMore.value) return
   loadingMore.value = true
   try {
     const res = await feedApi.getTimeline(cursor.value, pageSize)
-    feeds.value.push(...(res.data.list || []))
+    const list = res.data.list || []
+    const existingIds = new Set(feeds.value.map((item) => item.id))
+    const merged = list.filter((item) => !existingIds.has(item.id))
+    feeds.value.push(...merged)
     hasMore.value = !!res.data.has_more
-    cursor.value = Number(res.data.next_cursor || cursor.value)
+    cursor.value = res.data.next_cursor || cursor.value
   } catch (e) {
     // handled by interceptor
   } finally {
@@ -117,6 +120,12 @@ async function handleDelete(feedId) {
   try {
     await feedApi.deleteFeed(feedId)
     feeds.value = feeds.value.filter((item) => item.id !== feedId)
+    if (feeds.value.length === 0) {
+      cursor.value = ''
+      hasMore.value = true
+      await loadTimeline()
+      return
+    }
     ElMessage.success('删除成功')
   } catch (e) {
     // handled by interceptor
