@@ -20,8 +20,8 @@ var (
 )
 
 const (
-	KeyInbox      = "inbox:%d"
-	KeyOutbox     = "outbox:%d"
+	KeyInbox      = "inbox:%d"//收件箱
+	KeyOutbox     = "outbox:%d"//发件箱
 	KeyFeedDetail = "feed:%d"
 	KeyUserInfo   = "user:%d"
 	KeyFollowers  = "followers:%d"

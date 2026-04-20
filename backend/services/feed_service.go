@@ -73,7 +73,6 @@ func (s *FeedService) PublishFeed(userID uint, req *CreateFeedRequest) (*models.
 		return nil, errors.New("发布失败")
 	}
 	cache.AddFeedID(feed.ID)
-
 	mq.PublishFeed(feed.ID, userID)
 	return feed, nil
 }
@@ -138,7 +137,6 @@ func (s *FeedService) RepostFeed(userID uint, req *RepostFeedRequest) (*models.F
 		return nil, errors.New("转发失败")
 	}
 	cache.AddFeedID(feed.ID)
-
 	mq.PublishFeed(feed.ID, userID)
 	return feed, nil
 }
@@ -188,7 +186,7 @@ func (s *FeedService) GetFeedByID(feedID, currentUserID uint) (*models.FeedRespo
 			return &resp, nil
 		}
 	}
-
+	//setnx 获取锁 回源请求
 	lockKey := "lock:feed_detail:" + strconv.FormatUint(uint64(feedID), 10)
 	lockToken := strconv.FormatInt(time.Now().UnixNano(), 10)
 	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second)
@@ -247,14 +245,14 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 	if pageSize > 50 {
 		pageSize = 50
 	}
-
+	//解析游标
 	cursorTime, cursorID := parseTimelineCursor(cursor)
 	prefetchSize := pageSize + 1
 	candidateIDs := make([]uint, 0, prefetchSize*8)
-
+	//拉取自己的动态
 	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, prefetchSize*4)
 	candidateIDs = append(candidateIDs, s.filterTimelineCandidates(ownFeeds, cursorTime, cursorID)...)
-
+	//拉取收件箱
 	if inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(cursorTime.UnixNano()), int64(prefetchSize*6)); err == nil {
 		for _, idStr := range inboxIDs {
 			id, _ := strconv.ParseUint(idStr, 10, 64)
@@ -265,18 +263,18 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 	} else {
 		log.Printf("Get inbox from redis failed: %v", err)
 	}
-
+	//拉取大V的发件箱
 	candidateIDs = append(candidateIDs, s.pullBigVFeeds(userID, int64(prefetchSize*2), cursorTime)...)
 	candidateIDs = s.uniqueUint(candidateIDs)
 	if len(candidateIDs) == 0 {
 		return []models.FeedResponse{}, cursor, false, nil
 	}
-
+	//拉取动态
 	feeds, err := s.feedRepo.ListByIDsBeforeCursor(candidateIDs, cursorTime, cursorID)
 	if err != nil {
 		return nil, cursor, false, err
 	}
-
+	//分页
 	pageFeeds, hasMore := pickTimelinePage(feeds, pageSize)
 	if len(pageFeeds) == 0 {
 		return []models.FeedResponse{}, cursor, false, nil
@@ -284,23 +282,26 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 
 	responses := s.buildFeedResponses(pageFeeds, userID)
 	last := pageFeeds[len(pageFeeds)-1]
+	//构建游标
 	nextCursor := buildTimelineCursor(last.CreatedAt, last.ID)
 	if len(feeds) > len(pageFeeds) {
 		hasMore = true
 	}
+	//判断是否还有更多
 	if !hasMore && len(pageFeeds) == pageSize {
 		hasMore = s.hasMoreTimelineAfter(userID, last.CreatedAt, last.ID)
 	}
 	return responses, nextCursor, hasMore, nil
 }
 
+// 判断是否还有更多
 func (s *FeedService) hasMoreTimelineAfter(userID uint, lastTime time.Time, lastID uint) bool {
-	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, 100)
-	ownIDs := s.filterTimelineCandidates(ownFeeds, lastTime, lastID)
+	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, 100)        //拉取自己的动态
+	ownIDs := s.filterTimelineCandidates(ownFeeds, lastTime, lastID) //过滤动态
 	if len(ownIDs) > 0 {
 		return true
 	}
-
+	//拉取收件箱
 	inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(lastTime.UnixNano()), 100)
 	if err != nil || len(inboxIDs) == 0 {
 		return false
@@ -313,6 +314,7 @@ func (s *FeedService) hasMoreTimelineAfter(userID uint, lastTime time.Time, last
 			ids = append(ids, uint(id))
 		}
 	}
+	//拉取动态
 	feeds, err := s.feedRepo.ListByIDsNewerThanCursor(ids, lastTime, lastID)
 	if err != nil {
 		return false
@@ -368,6 +370,7 @@ func (s *FeedService) pullBigVFeeds(userID uint, limit int64, cursorTime time.Ti
 	return pullFeedIDs
 }
 
+// 合并并去重
 func (s *FeedService) mergeAndDedup(idGroups ...[]uint) []uint {
 	seen := make(map[uint]bool)
 	var result []uint
@@ -381,7 +384,7 @@ func (s *FeedService) mergeAndDedup(idGroups ...[]uint) []uint {
 	}
 	return result
 }
-
+// 去重
 func (s *FeedService) uniqueUint(values []uint) []uint {
 	seen := make(map[uint]bool)
 	result := make([]uint, 0, len(values))
@@ -684,7 +687,6 @@ func parseTimelineCursor(cursor string) (time.Time, uint) {
 	}
 	return time.Unix(0, nano), uint(id)
 }
-
 func buildTimelineCursor(createdAt time.Time, id uint) string {
 	if createdAt.IsZero() {
 		createdAt = time.Date(9999, 12, 30, 23, 59, 59, 999999999, time.UTC)
@@ -695,6 +697,7 @@ func buildTimelineCursor(createdAt time.Time, id uint) string {
 func (s *FeedService) filterTimelineCandidates(feeds []models.Feed, cursorTime time.Time, cursorID uint) []uint {
 	ids := make([]uint, 0, len(feeds))
 	for _, feed := range feeds {
+		//如果动态创建时间大于游标时间 或者 动态创建时间等于游标时间且动态ID大于等于游标ID 则跳过
 		if feed.CreatedAt.After(cursorTime) || (feed.CreatedAt.Equal(cursorTime) && feed.ID >= cursorID) {
 			continue
 		}
@@ -704,9 +707,11 @@ func (s *FeedService) filterTimelineCandidates(feeds []models.Feed, cursorTime t
 }
 
 func pickTimelinePage(feeds []models.Feed, pageSize int) ([]models.Feed, bool) {
+	//如果动态为空 返回空数组和false
 	if len(feeds) == 0 {
 		return []models.Feed{}, false
 	}
+	//如果动态数量小于等于分页大小 返回动态和false
 	if len(feeds) <= pageSize {
 		return feeds, false
 	}

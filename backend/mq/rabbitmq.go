@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	headerRetryCount  = "x-retry-count"
-	headerMessageKey  = "x-message-key"
+	headerRetryCount   = "x-retry-count"
+	headerMessageKey   = "x-message-key"
 	headersContentType = "application/json"
 )
 
@@ -179,14 +179,17 @@ func PublishFeed(feedID, authorID uint) {
 			return
 		}
 	}
-
+	//消息幂等键
 	msgKey := messageKey(feedID, authorID)
+	//发布消息到队列
 	err = publishToQueue(publisherQueue.Name, body, amqp.Table{
 		headerRetryCount: int32(0),
 		headerMessageKey: msgKey,
 	})
 	if err != nil {
+		//重置发布者
 		_ = resetPublisher()
+		//如果发布者不为空，则重新发布消息
 		if publisherChan != nil {
 			err = publishToQueue(publisherQueue.Name, body, amqp.Table{
 				headerRetryCount: int32(0),
@@ -319,7 +322,7 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 			log.Printf("[MQ Worker %d] Panic recovered: %v", workerID, r)
 		}
 	}()
-
+	//
 	messageKey := extractMessageKey(msg, headers)
 	if messageKey == "" {
 		messageKey = messageKeyFromMessage(msg)
@@ -333,11 +336,7 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 		log.Printf("[MQ Worker %d] Duplicate message ignored: %s", workerID, messageKey)
 		return true, nil
 	}
-
-	if err := cache.AddToOutbox(msg.AuthorID, msg.FeedID, msg.Timestamp); err != nil {
-		return false, fmt.Errorf("add to outbox failed: %w", err)
-	}
-
+	//判断是否为大V
 	isBigV, err := cache.IsBigV(msg.AuthorID)
 	if err != nil {
 		var user models.User
@@ -345,12 +344,16 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 			isBigV = user.IsBigV
 		}
 	}
-
-	if isBigV {
-		log.Printf("[MQ Worker %d] User %d is BigV, skip push, feed %d stored in outbox only", workerID, msg.AuthorID, msg.FeedID)
-		return true, nil
+	//将消息添加到发件箱
+	if err := cache.AddToOutbox(msg.AuthorID, msg.FeedID, msg.Timestamp); err != nil {
+		return false, fmt.Errorf("add to outbox failed: %w", err)
 	}
 
+	if isBigV {
+		log.Printf("[MQ Worker %d] User %d is BigV, feed %d stored in outbox only", workerID, msg.AuthorID, msg.FeedID)
+		return true, nil
+	}
+	//不是大V 将消息添加到收件箱
 	if err := dispatchToFollowers(workerID, msg); err != nil {
 		atomic.AddUint64(&mqDispatchErrorCount, 1)
 		return false, err
@@ -367,7 +370,7 @@ func dispatchToFollowers(workerID int, msg FeedMessage) error {
 	}
 
 	if len(followers) > threshold {
-		log.Printf("[MQ Worker %d] User %d has %d followers, exceeds threshold, skip push", workerID, msg.AuthorID, len(followers))
+		log.Printf("[MQ Worker %d] User %d has %d followers, exceeds threshold, keep outbox-only read path", workerID, msg.AuthorID, len(followers))
 		return nil
 	}
 
@@ -476,12 +479,12 @@ func extractMessageKey(msg FeedMessage, headers amqp.Table) string {
 	return messageKeyFromMessage(msg)
 }
 
-func messageKey(feedID, authorID uint) string {
-	return fmt.Sprintf("feed:%d:author:%d", feedID, authorID)
-}
-
 func messageKeyFromMessage(msg FeedMessage) string {
 	return messageKey(msg.FeedID, msg.AuthorID)
+}
+
+func messageKey(feedID, authorID uint) string {
+	return fmt.Sprintf("feed:%d:author:%d", feedID, authorID)
 }
 
 func copyHeaders(src amqp.Table) amqp.Table {
@@ -490,6 +493,7 @@ func copyHeaders(src amqp.Table) amqp.Table {
 	return dst
 }
 
+// 熔断器
 func isCircuitOpen() bool {
 	until := atomic.LoadInt64(&mqCircuitOpenUntil)
 	if until == 0 {
@@ -498,6 +502,7 @@ func isCircuitOpen() bool {
 	return time.Now().Unix() < until
 }
 
+// 打开熔断器
 func openCircuit(duration time.Duration) {
 	until := time.Now().Add(duration).Unix()
 	old := atomic.LoadInt64(&mqCircuitOpenUntil)

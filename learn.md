@@ -182,6 +182,11 @@ sequenceDiagram
 
 ### 3.2 用户发布动态的完整链路
 
+> 当前实现采用“发布入库 + MQ consumer 分流”的模式：
+> - `PublishFeed` 只负责写入动态与投递 MQ；
+> - MQ consumer 负责判断大V/普通用户，并执行 inbox/outbox 分发；
+> - 大V的读路径以 outbox 拉取为主，普通用户的读路径以 inbox 为主。
+
 ```mermaid
 sequenceDiagram
     participant U as 用户
@@ -191,6 +196,7 @@ sequenceDiagram
     participant D as MySQL
     participant C as Redis
     participant Q as RabbitMQ
+    participant W as MQ Consumer
 
     U->>F: 点击“发布”
     F->>H: 提交 feed 内容
@@ -198,12 +204,16 @@ sequenceDiagram
     H->>S: 调用业务层
     S->>D: 写入动态正文
     D-->>S: 返回 feed_id
-    S->>C: 删除/失效旧缓存
-    S->>S: 判断作者是否为大V
+    S->>C: 记录 feed bloom / 失效详情缓存
+    S->>Q: 投递发布事件
+    Q->>W: 消费发布事件
+    W->>C: 写作者 outbox
+    W->>W: 判断作者是否为大V
     alt 普通用户
-        S->>Q: 发布分发事件（推送粉丝 inbox）
+        W->>C: 推送粉丝 inbox
+        W->>D: 落库 timeline
     else 大V
-        S->>D: 写入 outbox
+        W->>W: 仅保留 outbox 读路径
     end
     S-->>H: 返回成功
     H-->>F: 响应发布结果
