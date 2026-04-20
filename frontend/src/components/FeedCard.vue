@@ -99,7 +99,7 @@
 
         <div v-if="comments.length" class="comment-block">
           <div v-for="comment in comments" :key="comment.id" class="comment-line">
-            <span class="comment-user clickable-user" @click="$emit('click-author', comment.author?.id)">{{ comment.author?.nickname || '用户' }}</span>
+            <span class="comment-user clickable-user" @click="$emit('click-author', comment.user_id)">{{ comment.nickname || comment.username || '用户' }}</span>
             <span>：{{ comment.content }}</span>
             <button
               v-if="comment.user_id === currentUserId"

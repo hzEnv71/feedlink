@@ -654,6 +654,7 @@ func (s *FeedService) DeleteComment(currentUserID, feedID, commentID uint) error
 	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
 	return nil
 }
+
 // 获取评论
 func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]models.CommentResponse, int64, error) {
 	//获取评论
@@ -671,18 +672,22 @@ func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]models.Com
 		userMap[u.ID] = u //设置用户信息
 	}
 	result := make([]models.CommentResponse, 0, len(comments)) //评论详情
-	for _, c := range comments {
-		item := models.CommentResponse{ID: c.ID, UserID: c.UserID, FeedID: c.FeedID, Content: c.Content}
-		if author, ok := userMap[c.UserID]; ok {
-			item.Username = author.Username
-			item.Nickname = author.Nickname
+	for _, comment := range comments {
+		if u, ok := userMap[comment.UserID]; ok {
+			result = append(result, models.CommentResponse{
+				ID:       comment.ID,
+				UserID:   comment.UserID,
+				FeedID:   comment.FeedID,
+				Content:  comment.Content,
+				Username: u.Username,
+				Nickname: u.Nickname,
+			})
+
 		}
-		result = append(result, item)
+
 	}
 	return result, total, nil
 }
-
-
 
 // SearchFeeds 搜索动态内容，用于全局搜索“动态”tab。
 func (s *FeedService) SearchFeeds(keyword string, page, pageSize int, currentUserID uint) ([]models.FeedResponse, int64, error) {
