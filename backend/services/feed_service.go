@@ -195,7 +195,7 @@ func (s *FeedService) GetFeedByID(feedID, currentUserID uint) (*models.FeedRespo
 	lockToken := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second) //获取锁
 	if !locked {
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			time.Sleep(40 * time.Millisecond)                                     //等待锁
 			if raw, err := cache.GetFeedDetail(feedID); err == nil && raw != "" { //获取动态详情
 				var resp models.FeedResponse
@@ -672,11 +672,10 @@ func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]models.Com
 	}
 	result := make([]models.CommentResponse, 0, len(comments)) //评论详情
 	for _, c := range comments {
-		item := models.CommentResponse{ID: c.ID, UserID: c.UserID, FeedID: c.FeedID, Content: c.Content, CreatedAt: c.CreatedAt}
+		item := models.CommentResponse{ID: c.ID, UserID: c.UserID, FeedID: c.FeedID, Content: c.Content}
 		if author, ok := userMap[c.UserID]; ok {
 			item.Username = author.Username
 			item.Nickname = author.Nickname
-			item.Avatar = author.Avatar
 		}
 		result = append(result, item)
 	}
