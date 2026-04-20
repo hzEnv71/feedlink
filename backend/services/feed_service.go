@@ -682,9 +682,7 @@ func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]models.Com
 				Username: u.Username,
 				Nickname: u.Nickname,
 			})
-
 		}
-
 	}
 	return result, total, nil
 }
