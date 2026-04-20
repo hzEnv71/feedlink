@@ -67,17 +67,19 @@ func (s *FeedService) PublishFeed(userID uint, req *CreateFeedRequest) (*models.
 	if req.Content == "" && req.Images == "" && req.Videos == "" {
 		return nil, errors.New("请输入文案、上传图片或视频")
 	}
-
+	//创建动态
 	feed := &models.Feed{UserID: userID, Content: req.Content, Images: req.Images, Videos: req.Videos, FeedType: models.FeedTypeOriginal}
-	if err := s.feedRepo.Create(feed); err != nil {
+	if err := s.feedRepo.Create(feed); err != nil { //创建动态
 		return nil, errors.New("发布失败")
 	}
-	cache.AddFeedID(feed.ID)
-	mq.PublishFeed(feed.ID, userID)
+	cache.AddFeedID(feed.ID)        //添加动态ID到缓存
+	mq.PublishFeed(feed.ID, userID) //发布动态到队列
 	return feed, nil
 }
 
+// 更新动态
 func (s *FeedService) UpdateFeed(feedID, userID uint, req *UpdateFeedRequest) (*models.Feed, error) {
+	//获取动态
 	feed, err := s.feedRepo.GetByIDAndUserID(feedID, userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -88,25 +90,25 @@ func (s *FeedService) UpdateFeed(feedID, userID uint, req *UpdateFeedRequest) (*
 
 	updates := make(map[string]any)
 	if req.Content != "" {
-		updates["content"] = req.Content
+		updates["content"] = req.Content //更新内容
 	}
 	if feed.FeedType == models.FeedTypeOriginal {
 		if req.Images != "" {
-			updates["images"] = req.Images
+			updates["images"] = req.Images //更新图片
 		}
 		if req.Videos != "" {
-			updates["videos"] = req.Videos
+			updates["videos"] = req.Videos //更新视频
 		}
 	}
 	if len(updates) == 0 {
-		return nil, errors.New("请至少填写一个要更新的字段")
+		return nil, errors.New("请至少填写一个要更新的字段") //返回错误
 	}
-	if err := s.feedRepo.UpdateByID(feedID, updates); err != nil {
-		return nil, errors.New("编辑失败")
+	if err := s.feedRepo.UpdateByID(feedID, updates); err != nil { //更新动态
+		return nil, errors.New("编辑失败") //返回错误
 	}
 	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err()
-	_ = cache.DeleteFeedDetail(feedID)
-	return s.feedRepo.GetByID(feedID)
+	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
+	return s.feedRepo.GetByID(feedID)  //返回动态
 }
 
 // 转发动态：转发原始动态，并增加转发数
@@ -190,7 +192,7 @@ func (s *FeedService) GetFeedByID(feedID, currentUserID uint) (*models.FeedRespo
 	}
 	//setnx 获取锁 回源请求
 	lockKey := "lock:feed_detail:" + strconv.FormatUint(uint64(feedID), 10) //获取锁
-	lockToken := strconv.FormatInt(time.Now().UnixNano(), 10)
+	lockToken := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second) //获取锁
 	if !locked {
 		for i := 0; i < 8; i++ {
@@ -239,7 +241,7 @@ func (s *FeedService) GetUserFeeds(userID uint, page, pageSize int, currentUserI
 }
 
 // GetTimeline 获取时间线（真正游标分页）。//获取时间线 并判断是否有权限查看
-// cursor 语义："created_at_unix_nano|feed_id"，首次传空字符串。
+// cursor 语义："created_at_unix_Milli|feed_id"，首次传空字符串。
 // 返回 nextCursor 继续向更旧内容翻页。
 func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize int) ([]models.FeedResponse, string, bool, error) {
 	if pageSize <= 0 { //判断页码是否小于等于0
@@ -254,9 +256,10 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 	candidateIDs := make([]uint, 0, prefetchSize*8) //候选动态ID
 	//拉取自己的动态
 	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, prefetchSize*4) //拉取自己的动态
-	candidateIDs = append(candidateIDs, s.filterTimelineCandidates(ownFeeds, cursorTime, cursorID)...)
+	ownIDs := s.filterTimelineCandidates(ownFeeds, cursorTime, cursorID)
+	candidateIDs = append(candidateIDs, ownIDs...)
 	//拉取收件箱
-	if inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(cursorTime.UnixNano()), int64(prefetchSize*6)); err == nil { //拉取收件箱
+	if inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(cursorTime.UnixMilli()), int64(prefetchSize*6)); err == nil { //拉取收件箱
 		for _, idStr := range inboxIDs {
 			id, _ := strconv.ParseUint(idStr, 10, 64)
 			if id > 0 {
@@ -267,7 +270,8 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 		log.Printf("Get inbox from redis failed: %v", err) //获取收件箱失败
 	}
 	//拉取大V的发件箱
-	candidateIDs = append(candidateIDs, s.pullBigVFeeds(userID, int64(prefetchSize*2), cursorTime)...) //拉取大V的发件箱
+	bigVIDs := s.pullBigVFeeds(userID, int64(prefetchSize*2), cursorTime)
+	candidateIDs = append(candidateIDs, bigVIDs...) //拉取大V的发件箱
 	candidateIDs = s.uniqueUint(candidateIDs)
 	if len(candidateIDs) == 0 {
 		return []models.FeedResponse{}, cursor, false, nil
@@ -305,7 +309,7 @@ func (s *FeedService) hasMoreTimelineAfter(userID uint, lastTime time.Time, last
 		return true
 	}
 	//拉取收件箱
-	inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(lastTime.UnixNano()), 100)
+	inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(lastTime.UnixMilli()), 100)
 	if err != nil || len(inboxIDs) == 0 {
 		return false
 	}
@@ -334,7 +338,7 @@ func (s *FeedService) pullBigVFeeds(userID uint, limit int64, cursorTime time.Ti
 	follows, _ := s.followRepo.ListFollowingAll(userID)
 	seen := make(map[uint]bool)                             //去重
 	pullFeedIDs := make([]uint, 0, len(follows)*int(limit)) //拉取动态ID
-	cursorNano := float64(cursorTime.UnixNano())
+	cursorMilli := float64(cursorTime.UnixMilli())
 
 	for _, follow := range follows {
 		isBigV, err := cache.IsBigV(follow.FollowedID) //判断是否大V
@@ -355,7 +359,7 @@ func (s *FeedService) pullBigVFeeds(userID uint, limit int64, cursorTime time.Ti
 			pullFeedIDs = append(pullFeedIDs, id)
 		}
 
-		outboxIDs, err := cache.GetOutboxByScore(follow.FollowedID, -1, cursorNano, limit) //拉取发件箱动态ID
+		outboxIDs, err := cache.GetOutboxByScore(follow.FollowedID, -1, cursorMilli, limit) //拉取发件箱动态ID
 		if err != nil || len(outboxIDs) == 0 {
 			feeds, _ := s.feedRepo.ListRecentByUserID(follow.FollowedID, int(limit)) //拉取动态
 			for _, feed := range feeds {
@@ -560,6 +564,43 @@ func (s *FeedService) UnlikeFeed(userID, feedID uint) error {
 	return nil
 }
 
+// 获取动态点赞者
+func (s *FeedService) GetFeedLikers(feedID uint, page, pageSize int) ([]models.LikeResponse, int64, error) {
+	//获取动态点赞者
+	likes, total, err := s.feedRepo.ListLikesByFeedID(feedID, page, pageSize) //获取动态点赞者
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(likes) == 0 {
+		return []models.LikeResponse{}, total, nil //返回点赞者
+	}
+	userIDs := make([]uint, 0, len(likes)) //用户ID
+	for _, like := range likes {
+		userIDs = append(userIDs, like.UserID)
+	}
+	users, err := s.userRepo.ListByIDs(userIDs) //获取用户信息
+	if err != nil {
+		return nil, 0, err
+	}
+	userMap := make(map[uint]models.User) //用户信息
+	for _, u := range users {
+		userMap[u.ID] = u //设置用户信息
+	}
+	result := make([]models.LikeResponse, 0, len(likes)) //点赞者
+	for _, like := range likes {
+		if u, ok := userMap[like.UserID]; ok {
+			result = append(result, models.LikeResponse{
+				ID:       like.ID,
+				UserID:   like.UserID,
+				FeedID:   like.FeedID,
+				Username: u.Username,
+				Nickname: u.Nickname,
+			})
+		}
+	}
+	return result, total, nil //返回点赞者
+}
+
 // CommentFeed 发布评论，并失效动态详情缓存，保证评论数及时刷新。
 func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.Comment, error) {
 	if _, err := s.feedRepo.GetByID(feedID); err != nil { //获取动态
@@ -583,33 +624,6 @@ func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.
 		s.notificationService.CreateCommentNotification(userID, feed.UserID, feedID, content) //创建评论通知
 	}
 	return comment, nil //返回评论
-}
-
-// 获取评论
-func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]map[string]interface{}, int64, error) {
-	//获取评论
-	comments, total, err := s.feedRepo.ListCommentsByFeedID(feedID, page, pageSize)
-	if err != nil {
-		return nil, 0, err
-	}
-	userIDs := make([]uint, 0, len(comments)) //用户ID
-	for _, c := range comments {
-		userIDs = append(userIDs, c.UserID)
-	}
-	users, _ := s.userRepo.ListByIDs(userIDs) //获取用户信息
-	userMap := map[uint]models.User{}
-	for _, u := range users {
-		userMap[u.ID] = u //设置用户信息
-	}
-	result := make([]map[string]interface{}, 0, len(comments)) //评论详情
-	for _, c := range comments {
-		item := map[string]interface{}{"id": c.ID, "user_id": c.UserID, "content": c.Content, "created_at": c.CreatedAt}
-		if author, ok := userMap[c.UserID]; ok {
-			item["author"] = author.ToResponse() //构建用户信息
-		}
-		result = append(result, item)
-	}
-	return result, total, nil
 }
 
 // DeleteComment 删除评论，并失效动态详情缓存，避免评论数不一致。
@@ -640,37 +654,36 @@ func (s *FeedService) DeleteComment(currentUserID, feedID, commentID uint) error
 	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
 	return nil
 }
-
-// 获取动态点赞者
-func (s *FeedService) GetFeedLikers(feedID uint, page, pageSize int) ([]models.UserResponse, int64, error) {
-	//获取动态点赞者
-	likes, total, err := s.feedRepo.ListLikesByFeedID(feedID, page, pageSize) //获取动态点赞者
+// 获取评论
+func (s *FeedService) GetComments(feedID uint, page, pageSize int) ([]models.CommentResponse, int64, error) {
+	//获取评论
+	comments, total, err := s.feedRepo.ListCommentsByFeedID(feedID, page, pageSize)
 	if err != nil {
 		return nil, 0, err
 	}
-	if len(likes) == 0 {
-		return []models.UserResponse{}, total, nil //返回点赞者
+	userIDs := make([]uint, 0, len(comments)) //用户ID
+	for _, c := range comments {
+		userIDs = append(userIDs, c.UserID)
 	}
-	userIDs := make([]uint, 0, len(likes)) //用户ID
-	for _, like := range likes {
-		userIDs = append(userIDs, like.UserID)
-	}
-	users, err := s.userRepo.ListByIDs(userIDs) //获取用户信息
-	if err != nil {
-		return nil, 0, err
-	}
-	userMap := make(map[uint]models.User) //用户信息
+	users, _ := s.userRepo.ListByIDs(userIDs) //获取用户信息
+	userMap := map[uint]models.User{}
 	for _, u := range users {
 		userMap[u.ID] = u //设置用户信息
 	}
-	result := make([]models.UserResponse, 0, len(likes)) //点赞者
-	for _, like := range likes {
-		if u, ok := userMap[like.UserID]; ok {
-			result = append(result, u.ToResponse()) //添加点赞者
+	result := make([]models.CommentResponse, 0, len(comments)) //评论详情
+	for _, c := range comments {
+		item := models.CommentResponse{ID: c.ID, UserID: c.UserID, FeedID: c.FeedID, Content: c.Content, CreatedAt: c.CreatedAt}
+		if author, ok := userMap[c.UserID]; ok {
+			item.Username = author.Username
+			item.Nickname = author.Nickname
+			item.Avatar = author.Avatar
 		}
+		result = append(result, item)
 	}
-	return result, total, nil //返回点赞者
+	return result, total, nil
 }
+
+
 
 // SearchFeeds 搜索动态内容，用于全局搜索“动态”tab。
 func (s *FeedService) SearchFeeds(keyword string, page, pageSize int, currentUserID uint) ([]models.FeedResponse, int64, error) {
@@ -691,7 +704,7 @@ func parseTimelineCursor(cursor string) (time.Time, uint) {
 	if len(parts) != 2 {
 		return maxTimelineTime, ^uint(0) //返回最大时间线时间
 	}
-	nano, err := strconv.ParseInt(parts[0], 10, 64)
+	Milli, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		return maxTimelineTime, ^uint(0) //返回最大时间线时间
 	}
@@ -699,7 +712,7 @@ func parseTimelineCursor(cursor string) (time.Time, uint) {
 	if err != nil {
 		return maxTimelineTime, ^uint(0) //返回最大时间线时间
 	}
-	return time.Unix(0, nano), uint(id) //返回时间线时间
+	return time.Unix(0, Milli), uint(id) //返回时间线时间
 }
 
 // 构建时间线游标
@@ -708,7 +721,7 @@ func buildTimelineCursor(createdAt time.Time, id uint) string {
 	if createdAt.IsZero() {
 		createdAt = time.Date(9999, 12, 30, 23, 59, 59, 999999999, time.UTC)
 	}
-	return strconv.FormatInt(createdAt.UnixNano(), 10) + "|" + strconv.FormatUint(uint64(id), 10) //返回时间线游标
+	return strconv.FormatInt(createdAt.UnixMilli(), 10) + "|" + strconv.FormatUint(uint64(id), 10) //返回时间线游标
 }
 
 // 过滤时间线候选动态
@@ -735,4 +748,12 @@ func pickTimelinePage(feeds []models.Feed, pageSize int) ([]models.Feed, bool) {
 		return feeds, false
 	}
 	return feeds[:pageSize], true
+}
+
+func feedIDsOf(feeds []models.Feed) []uint {
+	ids := make([]uint, 0, len(feeds))
+	for _, feed := range feeds {
+		ids = append(ids, feed.ID)
+	}
+	return ids
 }

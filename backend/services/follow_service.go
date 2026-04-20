@@ -12,9 +12,9 @@ import (
 // FollowService 负责关注关系域业务编排。
 // 包含：关注、取关、列表查询，以及收件箱回填/清理等副作用流程。
 type FollowService struct {
-	followRepo           repository.FollowRepository
-	userService          *UserService
-	notificationService  *NotificationService
+	followRepo          repository.FollowRepository
+	userService         *UserService
+	notificationService *NotificationService
 }
 
 func NewFollowService() *FollowService {

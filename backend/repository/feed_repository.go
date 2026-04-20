@@ -136,7 +136,7 @@ func (r *feedMySQLRepository) ListByIDs(feedIDs []uint) ([]models.Feed, error) {
 	}
 	return feeds, nil
 }
-
+// 获取比游标时间旧的动态
 func (r *feedMySQLRepository) ListByIDsBeforeCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error) {
 	var feeds []models.Feed
 	if len(feedIDs) == 0 {
@@ -148,7 +148,7 @@ func (r *feedMySQLRepository) ListByIDsBeforeCursor(feedIDs []uint, cursorTime t
 	}
 	return feeds, nil
 }
-
+// 获取比游标时间新的动态
 func (r *feedMySQLRepository) ListByIDsNewerThanCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error) {
 	var feeds []models.Feed
 	if len(feedIDs) == 0 {

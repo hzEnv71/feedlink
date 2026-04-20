@@ -144,7 +144,7 @@ func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.
 	}
 
 	lockKey := "lock:user_profile:" + strconv.FormatUint(uint64(targetUserID), 10)
-	lockToken := strconv.FormatInt(time.Now().UnixNano(), 10)
+	lockToken := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second)
 	if !locked {
 		for i := 0; i < 8; i++ {

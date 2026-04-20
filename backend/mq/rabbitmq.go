@@ -156,7 +156,7 @@ func PublishFeed(feedID, authorID uint) {
 	msg := FeedMessage{
 		FeedID:    feedID,
 		AuthorID:  authorID,
-		Timestamp: float64(time.Now().UnixNano()),
+		Timestamp: float64(time.Now().UnixMilli()),
 	}
 
 	if isCircuitOpen() {

@@ -223,6 +223,35 @@ func (h *FeedHandler) UnlikeFeed(c *gin.Context) {
 	utils.SuccessWithMessage(c, "取消点赞成功", nil)
 }
 
+// GetFeedLikers 获取点赞用户列表
+// GET /api/feeds/:id/likes?page=1&page_size=20
+func (h *FeedHandler) GetFeedLikers(c *gin.Context) {
+	feedIDStr := c.Param("id")
+	feedID, err := strconv.ParseUint(feedIDStr, 10, 64)
+	if err != nil {
+		utils.Error(c, 400, "动态ID无效")
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 50 {
+		pageSize = 20
+	}
+
+	likers, total, err := h.feedService.GetFeedLikers(uint(feedID), page, pageSize)
+	if err != nil {
+		utils.Error(c, 500, "获取点赞列表失败")
+		return
+	}
+
+	utils.SuccessPage(c, likers, total, page, pageSize)
+}
+
 // CommentFeed 评论动态
 // POST /api/feeds/:id/comments
 func (h *FeedHandler) CommentFeed(c *gin.Context) {
@@ -249,6 +278,33 @@ func (h *FeedHandler) CommentFeed(c *gin.Context) {
 	}
 
 	utils.SuccessWithMessage(c, "评论成功", comment)
+}
+
+// DeleteComment 删除评论
+// DELETE /api/feeds/:id/comments/:comment_id
+func (h *FeedHandler) DeleteComment(c *gin.Context) {
+	currentUserID := middleware.GetCurrentUserID(c)
+
+	feedIDStr := c.Param("id")
+	feedID, err := strconv.ParseUint(feedIDStr, 10, 64)
+	if err != nil {
+		utils.Error(c, 400, "动态ID无效")
+		return
+	}
+
+	commentIDStr := c.Param("comment_id")
+	commentID, err := strconv.ParseUint(commentIDStr, 10, 64)
+	if err != nil {
+		utils.Error(c, 400, "评论ID无效")
+		return
+	}
+
+	if err := h.feedService.DeleteComment(currentUserID, uint(feedID), uint(commentID)); err != nil {
+		utils.Error(c, 400, err.Error())
+		return
+	}
+
+	utils.SuccessWithMessage(c, "删除评论成功", nil)
 }
 
 // GetComments 获取评论列表
@@ -280,33 +336,6 @@ func (h *FeedHandler) GetComments(c *gin.Context) {
 	utils.SuccessPage(c, comments, total, page, pageSize)
 }
 
-// DeleteComment 删除评论
-// DELETE /api/feeds/:id/comments/:comment_id
-func (h *FeedHandler) DeleteComment(c *gin.Context) {
-	currentUserID := middleware.GetCurrentUserID(c)
-
-	feedIDStr := c.Param("id")
-	feedID, err := strconv.ParseUint(feedIDStr, 10, 64)
-	if err != nil {
-		utils.Error(c, 400, "动态ID无效")
-		return
-	}
-
-	commentIDStr := c.Param("comment_id")
-	commentID, err := strconv.ParseUint(commentIDStr, 10, 64)
-	if err != nil {
-		utils.Error(c, 400, "评论ID无效")
-		return
-	}
-
-	if err := h.feedService.DeleteComment(currentUserID, uint(feedID), uint(commentID)); err != nil {
-		utils.Error(c, 400, err.Error())
-		return
-	}
-
-	utils.SuccessWithMessage(c, "删除评论成功", nil)
-}
-
 // SearchFeeds 搜索动态
 // GET /api/feeds/search?keyword=xxx&page=1&page_size=20
 func (h *FeedHandler) SearchFeeds(c *gin.Context) {
@@ -332,33 +361,4 @@ func (h *FeedHandler) SearchFeeds(c *gin.Context) {
 		return
 	}
 	utils.SuccessPage(c, feeds, total, page, pageSize)
-}
-
-// GetFeedLikers 获取点赞用户列表
-// GET /api/feeds/:id/likes?page=1&page_size=20
-func (h *FeedHandler) GetFeedLikers(c *gin.Context) {
-	feedIDStr := c.Param("id")
-	feedID, err := strconv.ParseUint(feedIDStr, 10, 64)
-	if err != nil {
-		utils.Error(c, 400, "动态ID无效")
-		return
-	}
-
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 50 {
-		pageSize = 20
-	}
-
-	likers, total, err := h.feedService.GetFeedLikers(uint(feedID), page, pageSize)
-	if err != nil {
-		utils.Error(c, 500, "获取点赞列表失败")
-		return
-	}
-
-	utils.SuccessPage(c, likers, total, page, pageSize)
 }

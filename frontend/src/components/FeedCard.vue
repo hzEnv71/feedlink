@@ -91,7 +91,7 @@
           <el-icon class="heart"><StarFilled /></el-icon>
           <span v-if="likers.length">
             <template v-for="(u, idx) in likers" :key="u.id || idx">
-              <span class="clickable-user" @click="$emit('click-author', u.id)">{{ u.nickname }}</span><span v-if="idx < likers.length - 1">、</span>
+              <span class="clickable-user" @click="$emit('click-author', u.author?.id || u.user_id)">{{ u.author?.nickname || u.nickname || '用户' }}</span><span v-if="idx < likers.length - 1">、</span>
             </template>
           </span>
           <span v-else>{{ feed.like_count }}人觉得很赞</span>

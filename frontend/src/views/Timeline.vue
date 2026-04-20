@@ -46,7 +46,7 @@ const router = useRouter()
 const feeds = ref([])
 const loading = ref(false)
 const loadingMore = ref(false)
-// 游标分页状态：cursor 使用 "created_at_unix_nano|feed_id" 格式，首次为空字符串。
+// 游标分页状态：cursor 使用 "created_at_unix_Milli|feed_id" 格式，首次为空字符串。
 const cursor = ref('')
 const pageSize = 20
 const hasMore = ref(true)

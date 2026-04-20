@@ -17,14 +17,14 @@ const (
 type Feed struct {
 	ID           uint           `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID       uint           `gorm:"index:idx_user_created;index:idx_feed_created_user,priority:2;not null" json:"user_id"` // 发布者ID
-	Content      string         `gorm:"type:text" json:"content"`                       // 文案内容（可为空，纯图片/视频）
-	Images       string         `gorm:"type:varchar(2000);default:''" json:"images"`    // 图片URL列表，JSON数组
-	Videos       string         `gorm:"type:varchar(2000);default:''" json:"videos"`    // 视频URL列表，JSON数组
-	FeedType     int            `gorm:"default:0" json:"feed_type"`                     // 0-原创 1-转发
-	OriginalID   *uint          `gorm:"index" json:"original_id"`                       // 转发的原始Feed ID
-	LikeCount    int64          `gorm:"default:0" json:"like_count"`                    // 点赞数
-	CommentCount int64          `gorm:"default:0" json:"comment_count"`                 // 评论数
-	ShareCount   int64          `gorm:"default:0" json:"share_count"`                   // 转发数
+	Content      string         `gorm:"type:text" json:"content"`                                                              // 文案内容（可为空，纯图片/视频）
+	Images       string         `gorm:"type:varchar(2000);default:''" json:"images"`                                           // 图片URL列表，JSON数组
+	Videos       string         `gorm:"type:varchar(2000);default:''" json:"videos"`                                           // 视频URL列表，JSON数组
+	FeedType     int            `gorm:"default:0" json:"feed_type"`                                                            // 0-原创 1-转发
+	OriginalID   *uint          `gorm:"index" json:"original_id"`                                                              // 转发的原始Feed ID
+	LikeCount    int64          `gorm:"default:0" json:"like_count"`                                                           // 点赞数
+	CommentCount int64          `gorm:"default:0" json:"comment_count"`                                                        // 评论数
+	ShareCount   int64          `gorm:"default:0" json:"share_count"`                                                          // 转发数
 	CreatedAt    time.Time      `gorm:"index:idx_user_created;index:idx_feed_created_user,priority:1;index:idx_feed_created" json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
@@ -81,6 +81,15 @@ func (Like) TableName() string {
 	return "likes"
 }
 
+// LikeResponse 点赞列表项响应
+type LikeResponse struct {
+	ID       uint   `json:"id"`
+	UserID   uint   `json:"user_id"`
+	FeedID   uint   `json:"feed_id"`
+	Username string `json:"username"`
+	Nickname string `json:"nickname"`
+}
+
 // Comment 评论模型
 type Comment struct {
 	ID        uint           `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -93,4 +102,14 @@ type Comment struct {
 
 func (Comment) TableName() string {
 	return "comments"
+}
+
+// CommentResponse 评论列表项响应
+type CommentResponse struct {
+	ID       uint   `json:"id"`
+	UserID   uint   `json:"user_id"`
+	FeedID   uint   `json:"feed_id"`
+	Content  string `json:"content"`
+	Username string `json:"username"`
+	Nickname string `json:"nickname"`
 }
