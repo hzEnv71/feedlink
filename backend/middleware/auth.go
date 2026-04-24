@@ -31,6 +31,7 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
+// extractBearerToken 提取 Bearer Token
 func extractBearerToken(authHeader string) (string, bool) {
 	authHeader = strings.TrimSpace(authHeader)
 	if authHeader == "" {

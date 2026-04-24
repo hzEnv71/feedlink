@@ -50,8 +50,8 @@ func SetupRouter() *gin.Engine {
 		// ==================== 认证相关（无需登录） ====================
 		auth := api.Group("/auth")
 		{
-			auth.POST("/register", middleware.RateLimitByIP("register", rl.RegisterIP.Rate, rl.RegisterIP.Burst), userHandler.Register)
-			auth.POST("/login", middleware.RateLimitByIP("login", rl.LoginIP.Rate, rl.LoginIP.Burst), userHandler.Login)
+			auth.POST("/register", middleware.RateLimitByIP("register", rl.RegisterIP.Rate, rl.RegisterIP.Burst), userHandler.Register)//令牌桶限流
+			auth.POST("/login", middleware.RateLimitByIP("login", rl.LoginIP.Rate, rl.LoginIP.Burst), userHandler.Login)//令牌桶限流
 		}
 
 		// ==================== 需要登录的路由 ====================
@@ -76,8 +76,8 @@ func SetupRouter() *gin.Engine {
 			authenticated.GET("/users/:id/following", followHandler.GetFollowing)
 
 			// Feed相关
-			authenticated.POST("/feeds", middleware.RateLimitByUser("publish_feed", rl.PublishFeed.Rate, rl.PublishFeed.Burst), feedHandler.PublishFeed)
-			authenticated.POST("/feeds/repost", middleware.RateLimitByUser("repost_feed", rl.RepostFeed.Rate, rl.RepostFeed.Burst), feedHandler.RepostFeed)
+			authenticated.POST("/feeds", middleware.RateLimitByUser("publish_feed", rl.PublishFeed.Rate, rl.PublishFeed.Burst), feedHandler.PublishFeed)//令牌桶限流
+			authenticated.POST("/feeds/repost", middleware.RateLimitByUser("repost_feed", rl.RepostFeed.Rate, rl.RepostFeed.Burst), feedHandler.RepostFeed)//令牌桶限流
 			authenticated.DELETE("/feeds/:id", feedHandler.DeleteFeed)
 			authenticated.GET("/feeds/search", feedHandler.SearchFeeds)
 			authenticated.GET("/feeds/:id", feedHandler.GetFeed)
@@ -92,7 +92,7 @@ func SetupRouter() *gin.Engine {
 			authenticated.GET("/feeds/:id/likes", feedHandler.GetFeedLikers)
 
 			// 评论
-			authenticated.POST("/feeds/:id/comments", middleware.RateLimitByUser("comment_feed", rl.CommentFeed.Rate, rl.CommentFeed.Burst), feedHandler.CommentFeed)
+			authenticated.POST("/feeds/:id/comments", middleware.RateLimitByUser("comment_feed", rl.CommentFeed.Rate, rl.CommentFeed.Burst), feedHandler.CommentFeed)//令牌桶限流
 			authenticated.GET("/feeds/:id/comments", feedHandler.GetComments)
 			authenticated.DELETE("/feeds/:id/comments/:comment_id", feedHandler.DeleteComment)
 

@@ -65,19 +65,19 @@ rate_limit:
   # 令牌桶：rate=每秒补充令牌数，burst=桶容量（瞬时突发上限）
   login_ip:
     rate: 0.3
-    burst: 15
+    burst: 150
   register_ip:
     rate: 0.2
-    burst: 10
+    burst: 100
   publish_feed:
     rate: 0.2
-    burst: 10
+    burst: 100
   repost_feed:
     rate: 0.4
-    burst: 20
+    burst: 200
   comment_feed:
     rate: 0.6
-    burst: 30
+    burst: 300
   send_message:
     rate: 0.8
-    burst: 40
+    burst: 400

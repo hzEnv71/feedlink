@@ -697,6 +697,7 @@ func (s *FeedService) SearchFeeds(keyword string, page, pageSize int, currentUse
 	return s.buildFeedResponses(feeds, currentUserID), total, nil //返回动态
 }
 
+// 解析时间线游标
 func parseTimelineCursor(cursor string) (time.Time, uint) {
 	maxTimelineTime := time.Date(9999, 12, 30, 23, 59, 59, 999999999, time.UTC) //最大时间线时间
 	if strings.TrimSpace(cursor) == "" {
@@ -750,12 +751,4 @@ func pickTimelinePage(feeds []models.Feed, pageSize int) ([]models.Feed, bool) {
 		return feeds, false
 	}
 	return feeds[:pageSize], true
-}
-
-func feedIDsOf(feeds []models.Feed) []uint {
-	ids := make([]uint, 0, len(feeds))
-	for _, feed := range feeds {
-		ids = append(ids, feed.ID)
-	}
-	return ids
 }

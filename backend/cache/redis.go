@@ -20,13 +20,13 @@ var (
 )
 
 const (
-	KeyInbox      = "inbox:%d"//收件箱
-	KeyOutbox     = "outbox:%d"//发件箱
-	KeyFeedDetail = "feed:%d"
-	KeyUserInfo   = "user:%d"
-	KeyFollowers  = "followers:%d"
-	KeyFollowing  = "following:%d"
-	KeyIsBigV     = "bigv:%d"
+	KeyInbox      = "inbox:%d"     //收件箱
+	KeyOutbox     = "outbox:%d"    //发件箱
+	KeyFeedDetail = "feed:%d"      //动态详情
+	KeyUserInfo   = "user:%d"      //用户信息
+	KeyFollowers  = "followers:%d" //粉丝列表
+	KeyFollowing  = "following:%d" //关注列表
+	KeyIsBigV     = "bigv:%d"      //是否为大V
 )
 
 var (
@@ -58,21 +58,23 @@ func InitRedis() error {
 	return nil
 }
 
+// AddToInbox 将 feedID 添加到收件箱。
 func AddToInbox(userID, feedID uint, timestamp float64) error {
 	key := fmt.Sprintf(KeyInbox, userID)
 	if err := addToSortedSet(key, feedID, timestamp); err != nil {
 		return err
 	}
-	trimSortedSetByMaxSize(key, int64(config.AppConfig.Feed.InboxMaxSize))
+	trimSortedSetByMaxSize(key, int64(config.AppConfig.Feed.InboxMaxSize)) //修剪收件箱，保持收件箱大小不超过配置的大小
 	return nil
 }
 
+// AddToOutbox 将 feedID 添加到发件箱。
 func AddToOutbox(userID, feedID uint, timestamp float64) error {
 	key := fmt.Sprintf(KeyOutbox, userID)
 	if err := addToSortedSet(key, feedID, timestamp); err != nil {
 		return err
 	}
-	trimSortedSetByMaxSize(key, int64(config.AppConfig.Feed.OutboxMaxSize))
+	trimSortedSetByMaxSize(key, int64(config.AppConfig.Feed.OutboxMaxSize)) //修剪发件箱，保持发件箱大小不超过配置的大小
 	return nil
 }
 
@@ -82,6 +84,7 @@ func GetInbox(userID uint, offset, limit int64) ([]string, error) {
 	return getSortedSetByRangeDesc(key, offset, limit)
 }
 
+// GetInboxByScore 按时间倒序获取收件箱 feedID 列表。
 func GetInboxByScore(userID uint, minTime, maxTime float64, limit int64) ([]string, error) {
 	key := fmt.Sprintf(KeyInbox, userID)
 	return RedisClient.ZRevRangeByScore(Ctx, key, &redis.ZRangeBy{
@@ -91,11 +94,13 @@ func GetInboxByScore(userID uint, minTime, maxTime float64, limit int64) ([]stri
 	}).Result()
 }
 
+// GetOutbox 按时间倒序获取发件箱 feedID 列表。
 func GetOutbox(userID uint, offset, limit int64) ([]string, error) {
 	key := fmt.Sprintf(KeyOutbox, userID)
 	return getSortedSetByRangeDesc(key, offset, limit)
 }
 
+// GetOutboxByScore 按时间倒序获取发件箱 feedID 列表。
 func GetOutboxByScore(userID uint, minTime, maxTime float64, limit int64) ([]string, error) {
 	key := fmt.Sprintf(KeyOutbox, userID)
 	return RedisClient.ZRevRangeByScore(Ctx, key, &redis.ZRangeBy{
@@ -105,6 +110,7 @@ func GetOutboxByScore(userID uint, minTime, maxTime float64, limit int64) ([]str
 	}).Result()
 }
 
+// RemoveFromInbox 从收件箱中删除 feedID。
 func RemoveFromInbox(userID uint, feedID uint) error {
 	key := fmt.Sprintf(KeyInbox, userID)
 	return RedisClient.ZRem(Ctx, key, feedID).Err()
@@ -117,6 +123,7 @@ func CacheFeedDetail(feedID uint, data string) error {
 	return RedisClient.Set(Ctx, key, data, ttl).Err()
 }
 
+// GetFeedDetail 获取Feed详情
 func GetFeedDetail(feedID uint) (string, error) {
 	key := fmt.Sprintf(KeyFeedDetail, feedID)
 	v, err := RedisClient.Get(Ctx, key).Result()
@@ -259,7 +266,7 @@ func trimSortedSetByMaxSize(key string, maxSize int64) {
 	if maxSize <= 0 {
 		return
 	}
-	_ = RedisClient.ZRemRangeByRank(Ctx, key, 0, -maxSize-1).Err()
+	_ = RedisClient.ZRemRangeByRank(Ctx, key, 0, -maxSize-1).Err() //修剪有序集合，保持有序集合大小不超过配置的大小
 }
 
 func getSortedSetByRangeDesc(key string, offset, limit int64) ([]string, error) {

@@ -31,7 +31,6 @@ func (c *Client) WriteJSON(v any) error {
 func (c *Client) WriteMessage(messageType int, data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// log.Println("WriteMessage", string(data))
 	return c.Conn.WriteMessage(messageType, data)
 }
 
@@ -79,16 +78,16 @@ func PushToUser(userID uint, event MessageEvent) {
 
 	payload, _ := json.Marshal(event)
 	for client := range conns {
-		if client.ExpiresAt.Before(time.Now()) {
-			_ = client.WriteJSON(MessageEvent{Type: "auth:expired", Data: map[string]any{"message": "token expired"}})
-			_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "token expired"), time.Now().Add(2*time.Second))
-			_ = client.Conn.Close()
-			UnregisterConn(client)
+		if client.ExpiresAt.Before(time.Now()) {// 如果令牌过期，则关闭连接
+			_ = client.WriteJSON(MessageEvent{Type: "auth:expired", Data: map[string]any{"message": "token expired"}})// 发送令牌过期事件
+			_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "token expired"), time.Now().Add(2*time.Second))// 发送关闭连接事件
+			_ = client.Conn.Close()// 关闭连接
+			UnregisterConn(client)// 注销连接
 			continue
 		}
 		if err := client.WriteMessage(websocket.TextMessage, payload); err != nil { //接收方：读取接收者接受的消息（写入消息 前端读取）
-			_ = client.Conn.Close()
-			UnregisterConn(client)
+			_ = client.Conn.Close()// 关闭连接	
+			UnregisterConn(client)// 注销连接	
 		}
 	}
 }

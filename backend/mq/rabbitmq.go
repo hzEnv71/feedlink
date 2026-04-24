@@ -35,15 +35,15 @@ var (
 	publisherQueue amqp.Queue
 	publisherMu    sync.Mutex
 
-	mqCircuitOpenUntil int64 // unix seconds，> now 表示熔断开启
+	mqCircuitOpenUntil int64 //熔断开启时间 unix秒数，大于当前时间表示熔断开启
 
-	mqCircuitOpenCount   uint64
-	mqCircuitCloseCount  uint64
-	mqDegradeCount       uint64
-	mqPublishFailCount   uint64
-	mqRetryCount         uint64
-	mqDLQCount           uint64
-	mqDispatchErrorCount uint64
+	mqCircuitOpenCount   uint64 //熔断开启次数
+	mqCircuitCloseCount  uint64 //熔断关闭次数
+	mqDegradeCount       uint64 //降级次数
+	mqPublishFailCount   uint64 //发布失败次数
+	mqRetryCount         uint64 //重试次数
+	mqDLQCount           uint64 //死信次数
+	mqDispatchErrorCount uint64 //分发错误次数
 )
 
 // InitMQ 初始化 RabbitMQ，并启动消费者。
@@ -106,13 +106,13 @@ func initPublisher() error {
 // - 重试队列通过 TTL 到期后回流主队列；
 // - 死信队列承接超过重试上限的消息，便于排查与回放。
 func declareTopology(ch *amqp.Channel) error {
-	if _, err := declareMainQueue(ch); err != nil {
+	if _, err := declareMainQueue(ch); err != nil { //声明主队列失败，则返回错误
 		return err
 	}
-	if _, err := declareRetryQueue(ch); err != nil {
+	if _, err := declareRetryQueue(ch); err != nil { //声明重试队列失败，则返回错误
 		return err
 	}
-	if _, err := declareDeadLetterQueue(ch); err != nil {
+	if _, err := declareDeadLetterQueue(ch); err != nil { //声明死信队列失败，则返回错误
 		return err
 	}
 	return nil
@@ -133,21 +133,22 @@ func declareMainQueue(ch *amqp.Channel) (amqp.Queue, error) {
 // 消息在该队列等待 retry_delay_ms 后自动回流主队列，实现延迟重试。
 func declareRetryQueue(ch *amqp.Channel) (amqp.Queue, error) {
 	cfg := config.AppConfig.RabbitMQ
-	delay := cfg.RetryDelayMS
+	delay := cfg.RetryDelayMS //重试延迟时间
 	if delay <= 0 {
-		delay = 5000
+		delay = 5000 //如果重试延迟时间小于0，则设置为5000毫秒
 	}
 	args := amqp.Table{
 		"x-message-ttl":             int32(delay),
 		"x-dead-letter-exchange":    "",
 		"x-dead-letter-routing-key": cfg.QueueName(),
 	}
-	return ch.QueueDeclare(cfg.RetryQueueName(), true, false, false, false, args)
+	return ch.QueueDeclare(cfg.RetryQueueName(), true, false, false, false, args) //声明重试队列
 }
 
+// declareDeadLetterQueue 声明死信队列。
 func declareDeadLetterQueue(ch *amqp.Channel) (amqp.Queue, error) {
 	cfg := config.AppConfig.RabbitMQ
-	return ch.QueueDeclare(cfg.DeadLetterQueueName(), true, false, false, false, nil)
+	return ch.QueueDeclare(cfg.DeadLetterQueueName(), true, false, false, false, nil) //声明死信队列
 }
 
 // PublishFeed 发布 Feed 推送任务。
@@ -160,7 +161,7 @@ func PublishFeed(feedID, authorID uint) {
 	}
 
 	if isCircuitOpen() {
-		degradeToOutbox(msg)
+		degradeToOutbox(msg) //降级为发件箱
 		return
 	}
 
@@ -197,16 +198,16 @@ func PublishFeed(feedID, authorID uint) {
 			})
 		}
 	}
-
+	//发布失败 打开熔断器 降级为发件箱
 	if err != nil {
 		atomic.AddUint64(&mqPublishFailCount, 1)
 		log.Printf("[MQ] Publish feed %d failed: %v", feedID, err)
-		openCircuit(15 * time.Second)
-		degradeToOutbox(msg)
+		openCircuit(15 * time.Second) //打开熔断器
+		degradeToOutbox(msg)          //降级为发件箱
 		return
 	}
 
-	closeCircuit()
+	closeCircuit() //关闭熔断器
 
 	log.Printf("[MQ] Feed %d published to queue", feedID)
 }
@@ -229,6 +230,7 @@ func publishToQueue(queueName string, body []byte, headers amqp.Table) error {
 	)
 }
 
+// 重置发布者
 func resetPublisher() error {
 	if publisherChan != nil {
 		_ = publisherChan.Close()
@@ -241,6 +243,7 @@ func resetPublisher() error {
 	return initPublisher()
 }
 
+// 消费循环
 func consumerLoop(workerID int) {
 	for {
 		if err := runConsumer(workerID); err != nil {
@@ -273,6 +276,7 @@ func runConsumer(workerID int) error {
 		return err
 	}
 
+	//设置Qos 预取消息数量
 	prefetch := cfg.Prefetch
 	if prefetch <= 0 {
 		prefetch = 50
@@ -281,6 +285,7 @@ func runConsumer(workerID int) error {
 		return err
 	}
 
+	//消费消息
 	msgs, err := ch.Consume(
 		cfg.QueueName(),
 		"",
@@ -294,6 +299,7 @@ func runConsumer(workerID int) error {
 		return err
 	}
 
+	//消费消息
 	for d := range msgs {
 		var msg FeedMessage
 		if err := json.Unmarshal(d.Body, &msg); err != nil {
@@ -302,12 +308,12 @@ func runConsumer(workerID int) error {
 			continue
 		}
 
-		processed, err := processDispatch(workerID, msg, d.Headers)
+		processed, err := processDispatch(workerID, msg, d.Headers) //处理消息
 		if err != nil {
-			handleRetryOrDeadLetter(workerID, d, err)
+			handleRetryOrDeadLetter(workerID, d, err) //处理失败消息
 			continue
 		}
-		if processed {
+		if processed { //确认消息
 			_ = d.Ack(false)
 		}
 	}
@@ -317,22 +323,22 @@ func runConsumer(workerID int) error {
 
 // processDispatch 执行推拉混合分发核心逻辑，并做幂等保护。
 func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, error) {
-	defer func() {
+	defer func() { //延迟函数，用于恢复panic
 		if r := recover(); r != nil {
 			log.Printf("[MQ Worker %d] Panic recovered: %v", workerID, r)
 		}
 	}()
-	//
+	//提取消息幂等键
 	messageKey := extractMessageKey(msg, headers)
 	if messageKey == "" {
 		messageKey = messageKeyFromMessage(msg)
 	}
 
-	ok, err := tryMarkMessageProcessing(messageKey)
+	ok, err := tryMarkMessageProcessing(messageKey) //尝试设置幂等标记
 	if err != nil {
 		return false, fmt.Errorf("idempotent check failed: %w", err)
 	}
-	if !ok {
+	if !ok { //如果幂等标记失败，则忽略消息
 		log.Printf("[MQ Worker %d] Duplicate message ignored: %s", workerID, messageKey)
 		return true, nil
 	}
@@ -361,40 +367,38 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 	return true, nil
 }
 
+// 将消息添加到收件箱
 func dispatchToFollowers(workerID int, msg FeedMessage) error {
-	threshold := config.AppConfig.Feed.PushFanLimit
+	threshold := config.AppConfig.Feed.PushFanLimit //普通用户推送上限
 
-	var followers []models.Follow
+	var followers []models.Follow //粉丝列表
 	if err := models.DB.Where("followed_id = ?", msg.AuthorID).Select("user_id").Find(&followers).Error; err != nil {
 		return fmt.Errorf("query followers failed: %w", err)
 	}
 
-	if len(followers) > threshold {
+	if len(followers) > threshold { //如果粉丝数超过推送上限，则只读发件箱
 		log.Printf("[MQ Worker %d] User %d has %d followers, exceeds threshold, keep outbox-only read path", workerID, msg.AuthorID, len(followers))
 		return nil
 	}
 
-	successCount := 0
+	successCount := 0 //成功推送粉丝数
 	for _, follower := range followers {
-		if err := cache.AddToInbox(follower.UserID, msg.FeedID, msg.Timestamp); err != nil {
+		if err := cache.AddToInbox(follower.UserID, msg.FeedID, msg.Timestamp); err != nil { //将消息添加到收件箱
 			log.Printf("[MQ Worker %d] Push to inbox of user %d failed: %v", workerID, follower.UserID, err)
 			continue
 		}
-
-		timeline := models.Timeline{
+		timeline := models.Timeline{ //创建时间线记录
 			UserID:    follower.UserID,
 			FeedID:    msg.FeedID,
 			AuthorID:  msg.AuthorID,
 			CreatedAt: time.Now(),
 		}
-		if err := models.DB.Create(&timeline).Error; err != nil {
+		if err := models.DB.Create(&timeline).Error; err != nil { //创建时间线记录失败，则降级策略：timeline 落库失败不影响主分发路径，避免放大 DB 故障。
 			// 降级策略：timeline 落库失败不影响主分发路径，避免放大 DB 故障。
 			log.Printf("[MQ Worker %d] Create timeline record failed (degraded): %v", workerID, err)
 		}
-
 		successCount++
 	}
-
 	log.Printf("[MQ Worker %d] Feed %d pushed to %d/%d followers' inbox", workerID, msg.FeedID, successCount, len(followers))
 	return nil
 }
@@ -403,59 +407,61 @@ func dispatchToFollowers(workerID int, msg FeedMessage) error {
 // - 未超过最大重试：投递到重试队列（延迟后回流主队列）
 // - 超过最大重试：投递到死信队列（DLQ）
 func handleRetryOrDeadLetter(workerID int, d amqp.Delivery, processErr error) {
+	//获取配置
 	cfg := config.AppConfig.RabbitMQ
-	maxRetries := cfg.MaxRetries
+	maxRetries := cfg.MaxRetries //最大重试次数
 	if maxRetries <= 0 {
 		maxRetries = 3
 	}
 
-	retryCount := extractRetryCount(d.Headers)
-	retryCount++
+	retryCount := extractRetryCount(d.Headers) //提取重试次数
+	retryCount++                               //重试次数加1
 
-	if publisherChan == nil {
-		if err := initPublisher(); err != nil {
+	if publisherChan == nil { //如果发布者为空，则重新初始化发布者
+		if err := initPublisher(); err != nil { //重新初始化发布者失败，则忽略消息
 			log.Printf("[MQ Worker %d] re-init publisher failed when retry: %v", workerID, err)
 			_ = d.Nack(false, true)
 			return
 		}
 	}
 
-	headers := copyHeaders(d.Headers)
-	headers[headerRetryCount] = int32(retryCount)
+	headers := copyHeaders(d.Headers)             //复制消息头
+	headers[headerRetryCount] = int32(retryCount) //重试次数写入消息头
 
 	var routeQueue string
-	if retryCount > maxRetries {
+	if retryCount > maxRetries { //如果重试次数超过最大重试次数，则投递到死信队列
 		routeQueue = cfg.DeadLetterQueueName()
 		atomic.AddUint64(&mqDLQCount, 1)
 		log.Printf("[MQ Worker %d] move message to DLQ after %d retries, err=%v", workerID, retryCount-1, processErr)
 	} else {
-		routeQueue = cfg.RetryQueueName()
+		routeQueue = cfg.RetryQueueName() //如果重试次数不超过最大重试次数，则投递到重试队列
 		atomic.AddUint64(&mqRetryCount, 1)
 		log.Printf("[MQ Worker %d] retry message #%d, err=%v", workerID, retryCount, processErr)
 	}
 
-	if err := publishToQueue(routeQueue, d.Body, headers); err != nil {
+	if err := publishToQueue(routeQueue, d.Body, headers); err != nil { //发布消息到重试队列或死信队列
 		log.Printf("[MQ Worker %d] publish retry/dlq failed: %v", workerID, err)
 		_ = d.Nack(false, true)
 		return
 	}
 
-	_ = d.Ack(false)
+	_ = d.Ack(false) //确认消息
 }
 
 // tryMarkMessageProcessing 尝试设置幂等标记。
 // 返回 true 表示“首次处理”，false 表示“重复消息”。
 func tryMarkMessageProcessing(messageKey string) (bool, error) {
-	ttlMin := config.AppConfig.RabbitMQ.IdempotentTTLMin
+	ttlMin := config.AppConfig.RabbitMQ.IdempotentTTLMin //幂等时间
 	if ttlMin <= 0 {
 		ttlMin = 60
 	}
-	ttl := time.Duration(ttlMin) * time.Minute
+	ttl := time.Duration(ttlMin) * time.Minute //幂等时间
 	idKey := "mq:idempotent:" + messageKey
-	ok, err := cache.RedisClient.SetNX(cache.Ctx, idKey, "1", ttl).Result()
+	ok, err := cache.RedisClient.SetNX(cache.Ctx, idKey, "1", ttl).Result() //尝试设置幂等标记
 	return ok, err
 }
 
+// 提取重试次数
 func extractRetryCount(headers amqp.Table) int {
 	if headers == nil {
 		return 0
@@ -467,6 +473,7 @@ func extractRetryCount(headers amqp.Table) int {
 	return parseHeaderInt(raw)
 }
 
+// 提取消息幂等键
 func extractMessageKey(msg FeedMessage, headers amqp.Table) string {
 	if headers == nil {
 		return messageKeyFromMessage(msg)
@@ -479,14 +486,17 @@ func extractMessageKey(msg FeedMessage, headers amqp.Table) string {
 	return messageKeyFromMessage(msg)
 }
 
+// 提取消息幂等键
 func messageKeyFromMessage(msg FeedMessage) string {
 	return messageKey(msg.FeedID, msg.AuthorID)
 }
 
+// 生成消息幂等键
 func messageKey(feedID, authorID uint) string {
 	return fmt.Sprintf("feed:%d:author:%d", feedID, authorID)
 }
 
+// 复制消息头
 func copyHeaders(src amqp.Table) amqp.Table {
 	dst := amqp.Table{}
 	maps.Copy(dst, src)
@@ -495,24 +505,25 @@ func copyHeaders(src amqp.Table) amqp.Table {
 
 // 熔断器
 func isCircuitOpen() bool {
-	until := atomic.LoadInt64(&mqCircuitOpenUntil)
+	until := atomic.LoadInt64(&mqCircuitOpenUntil) //熔断开启时间
 	if until == 0 {
 		return false
 	}
-	return time.Now().Unix() < until
+	return time.Now().Unix() < until //当前时间小于熔断开启时间，表示熔断开启
 }
 
 // 打开熔断器
 func openCircuit(duration time.Duration) {
-	until := time.Now().Add(duration).Unix()
-	old := atomic.LoadInt64(&mqCircuitOpenUntil)
+	until := time.Now().Add(duration).Unix()     //熔断开启时间
+	old := atomic.LoadInt64(&mqCircuitOpenUntil) //旧的熔断开启时间
 	atomic.StoreInt64(&mqCircuitOpenUntil, until)
 	if old == 0 || time.Now().Unix() >= old {
-		atomic.AddUint64(&mqCircuitOpenCount, 1)
+		atomic.AddUint64(&mqCircuitOpenCount, 1) //熔断开启次数加1
 		log.Printf("[MQ][Circuit] opened for %s", duration)
 	}
 }
 
+// 关闭熔断器
 func closeCircuit() {
 	old := atomic.LoadInt64(&mqCircuitOpenUntil)
 	if old != 0 {
@@ -551,6 +562,7 @@ func SnapshotMetrics() map[string]uint64 {
 	}
 }
 
+// 解析消息头中的整数值
 func parseHeaderInt(v any) int {
 	switch val := v.(type) {
 	case int:
