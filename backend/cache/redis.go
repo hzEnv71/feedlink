@@ -46,7 +46,7 @@ func InitRedis() error {
 		Addr:     cfg.Addr(),
 		Password: cfg.Password,
 		DB:       cfg.DB,
-		PoolSize: cfg.PoolSize,
+		PoolSize: cfg.PoolSize, //连接池大小
 	})
 
 	if _, err := client.Ping(Ctx).Result(); err != nil {

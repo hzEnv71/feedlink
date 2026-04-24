@@ -38,7 +38,7 @@ func (s *FollowService) Follow(userID, followedID uint) error {
 		return err
 	}
 
-	existing, err := s.followRepo.GetAnyRelation(userID, followedID)
+	existing, err := s.followRepo.GetAnyRelation(userID, followedID) //获取关注关系
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
@@ -48,39 +48,39 @@ func (s *FollowService) Follow(userID, followedID uint) error {
 
 	tx := s.followRepo.BeginTx()
 
-	if err == nil && existing.DeletedAt.Valid {
+	if err == nil && existing.DeletedAt.Valid { //恢复关注关系
 		if err := s.followRepo.RestoreRelation(tx, existing.ID); err != nil {
 			tx.Rollback()
 			return errors.New("关注失败")
 		}
 	} else {
-		follow := &models.Follow{UserID: userID, FollowedID: followedID}
+		follow := &models.Follow{UserID: userID, FollowedID: followedID} //创建关注关系
 		if err := s.followRepo.CreateRelation(tx, follow); err != nil {
 			tx.Rollback()
 			return errors.New("关注失败")
 		}
 	}
 
-	if err := s.followRepo.IncreaseFollowCount(tx, userID); err != nil {
+	if err := s.followRepo.IncreaseFollowCount(tx, userID); err != nil { //增加关注者数量
 		tx.Rollback()
 		return err
 	}
-	if err := s.followRepo.IncreaseFollowerCount(tx, followedID); err != nil {
+	if err := s.followRepo.IncreaseFollowerCount(tx, followedID); err != nil { //增加被关注者数量
 		tx.Rollback()
 		return err
 	}
 
 	tx.Commit()
-
-	cache.AddFollowing(userID, followedID)
-	cache.AddFollower(followedID, userID)
+	// 删除缓存后异步回源重建，保证最终一致性。
 	cache.DeleteUserCache(userID)
 	cache.DeleteUserCache(followedID)
 	go s.refreshFollowRelationCache(userID)
 	go s.refreshFollowerRelationCache(followedID)
-
+	//更新大V状态
 	s.userService.UpdateBigVStatus(followedID)
+	//创建关注通知
 	s.notificationService.CreateFollowNotification(userID, followedID)
+	//回填收件箱
 	go s.backfillInbox(userID, followedID)
 
 	return nil
@@ -117,15 +117,15 @@ func (s *FollowService) Unfollow(userID, followedID uint) error {
 		return err
 	}
 	tx.Commit()
-
-	cache.RemoveFollowing(userID, followedID)
-	cache.RemoveFollower(followedID, userID)
+	// 删除缓存后异步回源重建，保证最终一致性。
 	cache.DeleteUserCache(userID)
 	cache.DeleteUserCache(followedID)
+
 	go s.refreshFollowRelationCache(userID)
 	go s.refreshFollowerRelationCache(followedID)
-
+	//更新大V状态
 	s.userService.UpdateBigVStatus(followedID)
+	//清理收件箱
 	go s.cleanInbox(userID, followedID)
 
 	return nil
@@ -181,30 +181,32 @@ func (s *FollowService) GetFollowing(userID uint, page, pageSize int) ([]models.
 	return responses, total, nil
 }
 
+// 回填收件箱
 func (s *FollowService) backfillInbox(userID, followedID uint) {
 	isBigV, _ := cache.IsBigV(followedID)
 	if isBigV {
 		return
 	}
 
-	feeds, err := s.followRepo.ListRecentFeedsByUser(followedID, 50)
+	feeds, err := s.followRepo.ListRecentFeedsByUser(followedID, 50) //拉取最近50条动态
 	if err != nil {
 		return
 	}
 	for _, feed := range feeds {
-		_ = cache.AddToInbox(userID, feed.ID, float64(feed.CreatedAt.UnixMilli()))
+		_ = cache.AddToInbox(userID, feed.ID, float64(feed.CreatedAt.UnixMilli())) //添加到收件箱
 	}
 }
 
+// 清理收件箱
 func (s *FollowService) cleanInbox(userID, unfollowedID uint) {
-	feeds, err := s.followRepo.ListFeedIDsByUser(unfollowedID)
+	feeds, err := s.followRepo.ListFeedIDsByUser(unfollowedID) //拉取用户动态ID
 	if err != nil {
 		return
 	}
 	for _, feed := range feeds {
-		cache.RemoveFromInbox(userID, feed.ID)
+		cache.RemoveFromInbox(userID, feed.ID) //删除收件箱
 	}
-	_ = s.followRepo.DeleteTimelineByUserAndAuthor(userID, unfollowedID)
+	_ = s.followRepo.DeleteTimelineByUserAndAuthor(userID, unfollowedID) //删除时间线
 }
 
 // refreshFollowRelationCache 回源数据库并批量刷新“我关注的人”缓存。

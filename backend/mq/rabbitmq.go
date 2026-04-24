@@ -551,14 +551,14 @@ func SnapshotMetrics() map[string]uint64 {
 		isOpen = 1
 	}
 	return map[string]uint64{
-		"circuit_open":         isOpen,
-		"circuit_open_count":   atomic.LoadUint64(&mqCircuitOpenCount),
-		"circuit_close_count":  atomic.LoadUint64(&mqCircuitCloseCount),
-		"degrade_count":        atomic.LoadUint64(&mqDegradeCount),
+		"circuit_open":         isOpen,                                  //熔断开启状态
+		"circuit_open_count":   atomic.LoadUint64(&mqCircuitOpenCount),  //熔断开启次数
+		"circuit_close_count":  atomic.LoadUint64(&mqCircuitCloseCount), //熔断关闭次数
+		"degrade_count":        atomic.LoadUint64(&mqDegradeCount),      //降级次数
 		"publish_fail_count":   atomic.LoadUint64(&mqPublishFailCount),
-		"retry_count":          atomic.LoadUint64(&mqRetryCount),
-		"dlq_count":            atomic.LoadUint64(&mqDLQCount),
-		"dispatch_error_count": atomic.LoadUint64(&mqDispatchErrorCount),
+		"retry_count":          atomic.LoadUint64(&mqRetryCount),         //重试次数
+		"dlq_count":            atomic.LoadUint64(&mqDLQCount),           //死信次数
+		"dispatch_error_count": atomic.LoadUint64(&mqDispatchErrorCount), //分发错误次数
 	}
 }
 
