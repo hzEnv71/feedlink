@@ -142,7 +142,7 @@ func declareRetryQueue(ch *amqp.Channel) (amqp.Queue, error) {
 		"x-dead-letter-exchange":    "",
 		"x-dead-letter-routing-key": cfg.QueueName(),
 	}
-	return ch.QueueDeclare(cfg.RetryQueueName(), true, false, false, false, args) //声明重试队列
+	return ch.QueueDeclare(cfg.RetryQueueName(), true, false, false, false, args) //声明重试队列 自动回流主队列
 }
 
 // declareDeadLetterQueue 声明死信队列。
@@ -248,7 +248,7 @@ func consumerLoop(workerID int) {
 	for {
 		if err := runConsumer(workerID); err != nil {
 			log.Printf("[MQ Consumer %d] disconnected: %v", workerID, err)
-			time.Sleep(3 * time.Second)
+			time.Sleep(3 * time.Second) //睡眠3秒
 		}
 	}
 }
@@ -271,7 +271,7 @@ func runConsumer(workerID int) error {
 		return err
 	}
 	defer ch.Close()
-
+	//声明队列拓扑 主队列 重试队列 死信队列
 	if err := declareTopology(ch); err != nil {
 		return err
 	}
@@ -342,6 +342,11 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 		log.Printf("[MQ Worker %d] Duplicate message ignored: %s", workerID, messageKey)
 		return true, nil
 	}
+	defer func() {
+		if err != nil {
+			_ = releaseMessageProcessing(messageKey) //释放幂等标记 防止幂等标记永久占用
+		}
+	}()
 	//判断是否为大V
 	isBigV, err := cache.IsBigV(msg.AuthorID)
 	if err != nil {
@@ -459,6 +464,11 @@ func tryMarkMessageProcessing(messageKey string) (bool, error) {
 	idKey := "mq:idempotent:" + messageKey
 	ok, err := cache.RedisClient.SetNX(cache.Ctx, idKey, "1", ttl).Result() //尝试设置幂等标记
 	return ok, err
+}
+
+func releaseMessageProcessing(messageKey string) error {
+	idKey := "mq:idempotent:" + messageKey
+	return cache.RedisClient.Del(cache.Ctx, idKey).Err()
 }
 
 // 提取重试次数

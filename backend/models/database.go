@@ -45,7 +45,6 @@ func InitDB() error {
 		&User{},
 		&Follow{},
 		&Feed{},
-		&Timeline{},
 		&Like{},
 		&Comment{},
 		&Visit{},
