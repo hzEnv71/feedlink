@@ -22,6 +22,7 @@ type FollowRepository interface {
 	ListUsersByIDs(userIDs []uint) ([]models.User, error)
 	ListRecentFeedsByUser(userID uint, limit int) ([]models.Feed, error)
 	ListFeedIDsByUser(userID uint) ([]models.Feed, error)
+	CreateTimelines(tx *gorm.DB, timelines []models.Timeline) error
 	DeleteTimelineByUserAndAuthor(userID, authorID uint) error
 	BeginTx() *gorm.DB
 }
@@ -141,6 +142,13 @@ func (r *followMySQLRepository) ListFeedIDsByUser(userID uint) ([]models.Feed, e
 		return nil, err
 	}
 	return feeds, nil
+}
+
+func (r *followMySQLRepository) CreateTimelines(tx *gorm.DB, timelines []models.Timeline) error {
+	if len(timelines) == 0 {
+		return nil
+	}
+	return tx.Create(&timelines).Error
 }
 
 func (r *followMySQLRepository) DeleteTimelineByUserAndAuthor(userID, authorID uint) error {

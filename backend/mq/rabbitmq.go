@@ -388,9 +388,9 @@ func dispatchToFollowers(workerID int, msg FeedMessage) error {
 			continue
 		}
 		timeline := models.Timeline{ //创建时间线记录
-			UserID:    follower.UserID,
+			UserID:    follower.UserID, //粉丝
 			FeedID:    msg.FeedID,
-			AuthorID:  msg.AuthorID,
+			AuthorID:  msg.AuthorID, //原作者
 			CreatedAt: time.Now(),
 		}
 		if err := models.DB.Create(&timeline).Error; err != nil { //创建时间线记录失败，则降级策略：timeline 落库失败不影响主分发路径，避免放大 DB 故障。

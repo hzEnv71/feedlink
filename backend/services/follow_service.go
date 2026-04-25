@@ -192,9 +192,17 @@ func (s *FollowService) backfillInbox(userID, followedID uint) {
 	if err != nil {
 		return
 	}
+	timelines := make([]models.Timeline, 0, len(feeds))
 	for _, feed := range feeds {
 		_ = cache.AddToInbox(userID, feed.ID, float64(feed.CreatedAt.UnixMilli())) //添加到收件箱
+		timelines = append(timelines, models.Timeline{ //创建时间线记录
+			UserID:    userID,
+			FeedID:    feed.ID,
+			AuthorID:  followedID,
+			CreatedAt: feed.CreatedAt,
+		})
 	}
+	_ = s.followRepo.CreateTimelines(models.DB, timelines)
 }
 
 // 清理收件箱
@@ -219,7 +227,7 @@ func (s *FollowService) refreshFollowRelationCache(userID uint) {
 	for _, f := range follows {
 		ids = append(ids, f.FollowedID)
 	}
-	_ = cache.SetFollowing(userID, ids)
+	_ = cache.SetFollowing(userID, ids)//批量写入缓存
 }
 
 // refreshFollowerRelationCache 回源数据库并批量刷新“谁关注我”缓存。
@@ -232,5 +240,5 @@ func (s *FollowService) refreshFollowerRelationCache(userID uint) {
 	for _, f := range follows {
 		ids = append(ids, f.UserID)
 	}
-	_ = cache.SetFollowers(userID, ids)
+	_ = cache.SetFollowers(userID, ids)//批量写入缓存
 }

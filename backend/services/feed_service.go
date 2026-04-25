@@ -257,13 +257,13 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 	//拉取自己的动态
 	ownFeeds, _ := s.feedRepo.ListRecentByUserID(userID, prefetchSize*4) //拉取自己的动态
 	ownIDs := s.filterTimelineCandidates(ownFeeds, cursorTime, cursorID)
-	candidateIDs = append(candidateIDs, ownIDs...)
+	candidateIDs = append(candidateIDs, ownIDs...) //把自己的动态ID添加到候选动态ID
 	//拉取收件箱
 	if inboxIDs, err := cache.GetInboxByScore(userID, -1, float64(cursorTime.UnixMilli()), int64(prefetchSize*6)); err == nil { //拉取收件箱
 		for _, idStr := range inboxIDs {
 			id, _ := strconv.ParseUint(idStr, 10, 64)
 			if id > 0 {
-				candidateIDs = append(candidateIDs, uint(id))
+				candidateIDs = append(candidateIDs, uint(id)) //把收件箱动态ID添加到候选动态ID
 			}
 		}
 	} else {
@@ -271,8 +271,8 @@ func (s *FeedService) GetTimelineByCursor(userID uint, cursor string, pageSize i
 	}
 	//拉取大V的发件箱
 	bigVIDs := s.pullBigVFeeds(userID, int64(prefetchSize*2), cursorTime)
-	candidateIDs = append(candidateIDs, bigVIDs...) //拉取大V的发件箱
-	candidateIDs = s.uniqueUint(candidateIDs)
+	candidateIDs = append(candidateIDs, bigVIDs...) //把大V的发件箱动态ID添加到候选动态ID
+	candidateIDs = s.uniqueUint(candidateIDs)       //去重
 	if len(candidateIDs) == 0 {
 		return []models.FeedResponse{}, cursor, false, nil
 	}
