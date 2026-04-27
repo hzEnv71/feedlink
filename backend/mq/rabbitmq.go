@@ -75,19 +75,13 @@ func initPublisher() error {
 		return err
 	}
 
-	ch, err := conn.Channel()
+	ch, err := conn.Channel() //创建通道
 	if err != nil {
 		_ = conn.Close()
 		return err
 	}
 
-	if err := declareTopology(ch); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return err
-	}
-
-	q, err := declareMainQueue(ch)
+	q, err := declareTopology(ch) //声明队列拓扑
 	if err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
@@ -105,17 +99,18 @@ func initPublisher() error {
 // - 主队列消费失败后可进入重试或死信流程；
 // - 重试队列通过 TTL 到期后回流主队列；
 // - 死信队列承接超过重试上限的消息，便于排查与回放。
-func declareTopology(ch *amqp.Channel) error {
-	if _, err := declareMainQueue(ch); err != nil { //声明主队列失败，则返回错误
-		return err
+func declareTopology(ch *amqp.Channel) (amqp.Queue, error) {
+	q, err := declareMainQueue(ch)
+	if err != nil {
+		return amqp.Queue{}, err
 	}
-	if _, err := declareRetryQueue(ch); err != nil { //声明重试队列失败，则返回错误
-		return err
+	if _, err := declareRetryQueue(ch); err != nil {
+		return amqp.Queue{}, err
 	}
-	if _, err := declareDeadLetterQueue(ch); err != nil { //声明死信队列失败，则返回错误
-		return err
+	if _, err := declareDeadLetterQueue(ch); err != nil {
+		return amqp.Queue{}, err
 	}
-	return nil
+	return q, nil
 }
 
 // declareMainQueue 声明主消费队列。
@@ -187,7 +182,7 @@ func PublishFeed(feedID, authorID uint) {
 		headerRetryCount: int32(0),
 		headerMessageKey: msgKey,
 	})
-	if err != nil {
+	if err != nil { //发布消息失败，则重置发布者 重试发布消息
 		//重置发布者
 		_ = resetPublisher()
 		//如果发布者不为空，则重新发布消息
@@ -272,7 +267,7 @@ func runConsumer(workerID int) error {
 	}
 	defer ch.Close()
 	//声明队列拓扑 主队列 重试队列 死信队列
-	if err := declareTopology(ch); err != nil {
+	if _, err := declareTopology(ch); err != nil {
 		return err
 	}
 
@@ -466,6 +461,7 @@ func tryMarkMessageProcessing(messageKey string) (bool, error) {
 	return ok, err
 }
 
+// 释放幂等标记
 func releaseMessageProcessing(messageKey string) error {
 	idKey := "mq:idempotent:" + messageKey
 	return cache.RedisClient.Del(cache.Ctx, idKey).Err()

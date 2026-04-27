@@ -36,6 +36,8 @@ var (
 	metricUserCacheMiss   uint64
 	metricFeedCacheDelete uint64
 	metricUserCacheDelete uint64
+	metricFeedDeleteRetry uint64
+	metricUserDeleteRetry uint64
 )
 
 // InitRedis 初始化 Redis 客户端并执行连通性探测。
@@ -147,6 +149,15 @@ func DeleteFeedDetail(feedID uint) error {
 	return err
 }
 
+// DeleteFeedDetailWithRetry 删除动态详情缓存，失败时按次数异步重试。
+func DeleteFeedDetailWithRetry(feedID uint, ttlFallback time.Duration) {
+	deleteWithRetry(
+		func() error { return DeleteFeedDetail(feedID) },
+		func() { atomic.AddUint64(&metricFeedDeleteRetry, 1) },
+		ttlFallback,
+	)
+}
+
 // CacheUserInfo 缓存用户资料（带随机抖动，防缓存雪崩）。
 func CacheUserInfo(userID uint, data string) error {
 	key := fmt.Sprintf(KeyUserInfo, userID)
@@ -174,6 +185,15 @@ func DeleteUserCache(userID uint) error {
 		atomic.AddUint64(&metricUserCacheDelete, 1)
 	}
 	return err
+}
+
+// DeleteUserCacheWithRetry 删除用户详情缓存，失败时按次数异步重试。
+func DeleteUserCacheWithRetry(userID uint, ttlFallback time.Duration) {
+	deleteWithRetry(
+		func() error { return DeleteUserCache(userID) },
+		func() { atomic.AddUint64(&metricUserDeleteRetry, 1) },
+		ttlFallback,
+	)
 }
 
 func SetFollowers(userID uint, followerIDs []any) error {
@@ -283,6 +303,31 @@ func withJitter(baseTTL, maxJitter time.Duration) time.Duration {
 	jitter := time.Duration(rand.Int63n(int64(maxJitter)))
 	return baseTTL + jitter
 }
+//删除缓存，失败时按次数异步重试。
+func deleteWithRetry(deleteFn func() error, onRetry func(), ttlFallback time.Duration) {
+	if ttlFallback <= 0 {
+		ttlFallback = 24 * time.Hour
+	}
+	if err := deleteFn(); err != nil {
+		onRetry()//添加重试次数计数器
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			expire := time.NewTimer(ttlFallback)
+			defer expire.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if retryErr := deleteFn(); retryErr == nil {
+						return
+					}
+				case <-expire.C:
+					return
+				}
+			}
+		}()
+	}
+}
 
 // SnapshotCacheMetrics 返回缓存命中与失效指标快照。
 func SnapshotCacheMetrics() map[string]uint64 {
@@ -304,9 +349,11 @@ func SnapshotCacheMetrics() map[string]uint64 {
 		"feed_cache_miss":         feedMiss,
 		"feed_cache_hit_ratio_bp": calcHitRatioBP(feedHit, feedMiss),
 		"feed_cache_delete":       atomic.LoadUint64(&metricFeedCacheDelete),
+		"feed_delete_retry":       atomic.LoadUint64(&metricFeedDeleteRetry),
 		"user_cache_hit":          userHit,
 		"user_cache_miss":         userMiss,
 		"user_cache_hit_ratio_bp": calcHitRatioBP(userHit, userMiss),
 		"user_cache_delete":       atomic.LoadUint64(&metricUserCacheDelete),
+		"user_delete_retry":       atomic.LoadUint64(&metricUserDeleteRetry),
 	}
 }

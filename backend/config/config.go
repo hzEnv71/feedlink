@@ -20,6 +20,7 @@ type Config struct {
 	Feed      FeedConfig      `mapstructure:"feed"`
 	Upload    UploadConfig    `mapstructure:"upload"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+	WS        WSConfig        `mapstructure:"ws"`
 }
 
 type ServerConfig struct {
@@ -89,8 +90,14 @@ type RateLimitConfig struct {
 	RegisterIP   TokenBucketConfig `mapstructure:"register_ip"`
 	PublishFeed  TokenBucketConfig `mapstructure:"publish_feed"`
 	RepostFeed   TokenBucketConfig `mapstructure:"repost_feed"`
+	LikeFeed     TokenBucketConfig `mapstructure:"like_feed"`
 	CommentFeed  TokenBucketConfig `mapstructure:"comment_feed"`
 	SendMessage  TokenBucketConfig `mapstructure:"send_message"`
+}
+
+// WSConfig WebSocket 限流配置。
+type WSConfig struct {
+	SendMessage TokenBucketConfig `mapstructure:"send_message"`
 }
 
 // TokenBucketConfig 配置单个接口的 rate/burst。
@@ -126,6 +133,7 @@ func setRateLimitDefaults(c *RateLimitConfig) {
 	setTokenBucketDefault(&c.RegisterIP, 0.2, 10)
 	setTokenBucketDefault(&c.PublishFeed, 0.2, 10)
 	setTokenBucketDefault(&c.RepostFeed, 0.4, 20)
+	setTokenBucketDefault(&c.LikeFeed, 2, 60)
 	setTokenBucketDefault(&c.CommentFeed, 0.6, 30)
 	setTokenBucketDefault(&c.SendMessage, 0.8, 40)
 }

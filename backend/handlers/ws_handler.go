@@ -3,12 +3,12 @@ package handlers
 import (
 	"encoding/json"
 	"feed/middleware"
+	"feed/config"
 	"feed/realtime"
 	"feed/services"
-	"math"
 	"net/http"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,8 +33,6 @@ const (
 	wsPongWait        = 70 * time.Second
 	wsPingInterval    = 25 * time.Second
 	wsWriteWait       = 10 * time.Second
-	wsSendRatePerSec  = 5.0
-	wsSendBurst       = 10
 	maxMessageContent = 1000
 )
 
@@ -60,38 +58,6 @@ type wsHistoryData struct {
 	TargetUser uint   `json:"target_user_id"`
 	Page       int    `json:"page"`
 	PageSize   int    `json:"page_size"`
-}
-
-type wsTokenBucket struct {
-	mu     sync.Mutex
-	rate   float64
-	burst  float64
-	tokens float64
-	last   time.Time
-}
-
-// 创建令牌桶
-func newWSTokenBucket(rate float64, burst int) *wsTokenBucket {
-	b := float64(burst)
-	return &wsTokenBucket{rate: rate, burst: b, tokens: b, last: time.Now()}
-}
-
-// 令牌桶限流
-func (tb *wsTokenBucket) Allow() bool {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-
-	now := time.Now()
-	elapsed := now.Sub(tb.last).Seconds()
-	if elapsed > 0 {
-		tb.tokens = math.Min(tb.burst, tb.tokens+elapsed*tb.rate)
-		tb.last = now
-	}
-	if tb.tokens < 1 {
-		return false
-	}
-	tb.tokens -= 1
-	return true
 }
 
 // MessageWS 建立私信实时通道。
@@ -134,9 +100,8 @@ func (h *WSHandler) MessageWS(c *gin.Context) {
 		_ = conn.Close()
 	}()
 
-	limiter := newWSTokenBucket(wsSendRatePerSec, wsSendBurst) //创建令牌桶
-	stopPing := make(chan struct{})                            //创建停止ping通道
-	go h.keepAlive(client, stopPing)                           //启动心跳检测
+	stopPing := make(chan struct{}) //创建停止ping通道
+	go h.keepAlive(client, stopPing) //启动心跳检测
 
 	for {
 		if time.Now().After(client.ExpiresAt) { //如果令牌过期，则关闭连接
@@ -150,8 +115,9 @@ func (h *WSHandler) MessageWS(c *gin.Context) {
 			break //如果读取消息失败，则关闭连接
 		}
 
-		if !limiter.Allow() {
-			_ = client.WriteJSON(realtime.MessageEvent{Type: "message:error", Data: gin.H{"message": "发送过于频繁，请稍后再试"}})
+		wsCfg := config.AppConfig.WS.SendMessage
+	if pass, retryAfter, _ := middleware.AllowTokenBucket("tb:ws:send:user:"+strconv.FormatUint(uint64(userID), 10), wsCfg.Rate, wsCfg.Burst); !pass {//令牌桶限流 
+			_ = client.WriteJSON(realtime.MessageEvent{Type: "message:error", Data: gin.H{"message": "发送过于频繁，请稍后再试", "retry_after": retryAfter}})
 			continue //如果发送过于频繁，则发送错误事件
 		}
 

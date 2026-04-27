@@ -147,7 +147,7 @@ func (s *UserService) GetUserProfile(targetUserID, currentUserID uint) (*models.
 	lockToken := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	locked, _ := cache.AcquireLock(lockKey, lockToken, 3*time.Second)
 	if !locked {
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			time.Sleep(40 * time.Millisecond)
 			if raw, err := cache.GetUserInfo(targetUserID); err == nil && raw != "" {
 				if unmarshalErr := json.Unmarshal([]byte(raw), &resp); unmarshalErr == nil {
@@ -202,7 +202,7 @@ func (s *UserService) UpdateBigVStatus(userID uint) error {
 			return err
 		}
 		cache.SetBigV(userID, isBigV)
-		cache.DeleteUserCache(userID)
+		cache.DeleteUserCacheWithRetry(userID, 24*time.Hour)
 	}
 
 	return nil

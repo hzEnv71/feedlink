@@ -75,6 +75,9 @@ rate_limit:
   repost_feed:
     rate: 0.4
     burst: 200
+  like_feed:
+    rate: 2
+    burst: 60
   comment_feed:
     rate: 0.6
     burst: 300

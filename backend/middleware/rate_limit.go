@@ -68,28 +68,54 @@ func RateLimitByUser(prefix string, rate float64, burst int) gin.HandlerFunc {
 	}
 }
 
+// RateLimitByFeedFromContext 按 path 中的 feed_id 做令牌桶限流。
+// rate 表示每秒补充令牌数，burst 表示桶容量。
+func RateLimitByFeedFromContext(prefix string, rate float64, burst int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if rate <= 0 || burst <= 0 {
+			c.Next()
+			return
+		}
+		feedID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil || feedID == 0 {
+			c.Next()
+			return
+		}
+		key := fmt.Sprintf("tb:%s:feed:%d", prefix, feedID)
+		pass, retryAfter, err := allowByTokenBucket(key, rate, burst)
+		if err != nil {
+			c.Next()
+			return
+		}
+		if !pass {
+			utils.Error(c, 429, "视频点赞过于频繁，请稍后再试")
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// AllowTokenBucket 按任意 key 执行令牌桶限流，返回是否通过与建议等待时间。
+func AllowTokenBucket(key string, rate float64, burst int) (bool, int, error) {
+	return allowByTokenBucket(key, rate, burst)
+}
+
 // allowByTokenBucket 使用 Redis 实现令牌桶：
 // - tokens: 当前令牌数
 // - ts: 上次补充时间戳（毫秒）
 // - 按 rate 补充至 burst 上限，每次请求消费 1 个令牌
 func allowByTokenBucket(key string, rate float64, burst int) (bool, int, error) {
-	//获取当前时间戳
-	nowMs := time.Now().UnixMilli()
-	//获取令牌桶key
-	tokensKey := key + ":tokens"
-	//获取上次补充时间戳key
-	tsKey := key + ":ts"
-	//创建管道 用于一次性执行多个Redis命令
+	nowMs := time.Now().UnixMilli() //获取当前时间戳
+	tokensKey := key + ":tokens"    //获取令牌数key
+	tsKey := key + ":ts"            //获取上次补充时间戳key
 	pipe := cache.RedisClient.Pipeline()
-	//获取令牌数
-	tokensCmd := pipe.Get(cache.Ctx, tokensKey)
-	//获取上次补充时间戳
-	tsCmd := pipe.Get(cache.Ctx, tsKey)
-	//执行管道
-	_, _ = pipe.Exec(cache.Ctx)
-
-	tokens := float64(burst) //初始化令牌数
-	lastTs := nowMs          //初始化上次补充时间戳
+	tokensCmd := pipe.Get(cache.Ctx, tokensKey) //获取令牌数
+	tsCmd := pipe.Get(cache.Ctx, tsKey)         //获取上次补充时间戳
+	_, _ = pipe.Exec(cache.Ctx)                 //执行管道
+	tokens := float64(burst)                    //初始化令牌数
+	lastTs := nowMs                             //初始化上次补充时间戳
 	if v, err := tokensCmd.Float64(); err == nil {
 		tokens = v //获取令牌数
 	}
@@ -98,8 +124,8 @@ func allowByTokenBucket(key string, rate float64, burst int) (bool, int, error) 
 	}
 
 	if nowMs > lastTs { //如果当前时间戳大于上次补充时间戳，则补充令牌
-		deltaSec := float64(nowMs-lastTs) / 1000.0
-		tokens = math.Min(float64(burst), tokens+deltaSec*rate) //补充令牌
+		deltaSec := float64(nowMs-lastTs) / 1000.0              //计算时间差
+		tokens = math.Min(float64(burst), tokens+deltaSec*rate) //计算补充的令牌数
 	}
 
 	if tokens < 1 { //如果令牌数小于1，则需要补充令牌

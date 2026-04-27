@@ -72,8 +72,8 @@ func (s *FeedService) PublishFeed(userID uint, req *CreateFeedRequest) (*models.
 	if err := s.feedRepo.Create(feed); err != nil { //创建动态
 		return nil, errors.New("发布失败")
 	}
-	cache.AddFeedID(feed.ID)        //添加动态ID到缓存
-	mq.PublishFeed(feed.ID, userID) //发布动态到队列
+	cache.AddFeedID(feed.ID)        //添加动态ID到布隆过滤器
+	mq.PublishFeed(feed.ID, userID) //投递MQ 走异步分发
 	return feed, nil
 }
 
@@ -106,9 +106,8 @@ func (s *FeedService) UpdateFeed(feedID, userID uint, req *UpdateFeedRequest) (*
 	if err := s.feedRepo.UpdateByID(feedID, updates); err != nil { //更新动态
 		return nil, errors.New("编辑失败") //返回错误
 	}
-	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err()
-	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
-	return s.feedRepo.GetByID(feedID)  //返回动态
+	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存 带异步重试
+	return s.feedRepo.GetByID(feedID)                     //获取动态
 }
 
 // 转发动态：转发原始动态，并增加转发数
@@ -139,8 +138,8 @@ func (s *FeedService) RepostFeed(userID uint, req *RepostFeedRequest) (*models.F
 	if err := tx.Commit().Error; err != nil { //提交事务
 		return nil, errors.New("转发失败")
 	}
-	cache.AddFeedID(feed.ID)        //添加动态ID到缓存
-	mq.PublishFeed(feed.ID, userID) //发布动态到队列
+	cache.AddFeedID(feed.ID)        //添加动态ID到布隆过滤器
+	mq.PublishFeed(feed.ID, userID) //投递MQ 走异步分发
 	return feed, nil
 }
 
@@ -157,7 +156,7 @@ func (s *FeedService) DeleteFeed(feedID, userID uint) error {
 	if err := s.feedRepo.Delete(feed); err != nil {
 		return errors.New("删除失败")
 	}
-	_ = cache.RedisClient.Del(cache.Ctx, "feed:"+strconv.FormatUint(uint64(feedID), 10)).Err() //删除缓存
+	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存 带异步重试
 
 	key := strconv.FormatUint(uint64(feedID), 10)
 	_ = cache.RedisClient.ZRem(cache.Ctx, "outbox:"+strconv.FormatUint(uint64(userID), 10), key).Err() //删除发件箱
@@ -535,7 +534,7 @@ func (s *FeedService) LikeFeed(userID, feedID uint) error {
 	if err := tx.Commit().Error; err != nil { //提交事务
 		return errors.New("点赞失败")
 	}
-	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
+	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存
 	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
 		s.notificationService.CreateLikeNotification(userID, feed.UserID, feedID) //创建点赞通知
 	}
@@ -560,7 +559,7 @@ func (s *FeedService) UnlikeFeed(userID, feedID uint) error {
 	if err := tx.Commit().Error; err != nil { //提交事务
 		return errors.New("取消点赞失败")
 	}
-	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
+	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存
 	return nil
 }
 
@@ -619,7 +618,7 @@ func (s *FeedService) CommentFeed(userID, feedID uint, content string) (*models.
 	if err := tx.Commit().Error; err != nil { //提交事务
 		return nil, errors.New("评论失败")
 	}
-	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
+	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存
 	if feed, err := s.feedRepo.GetByID(feedID); err == nil {
 		s.notificationService.CreateCommentNotification(userID, feed.UserID, feedID, content) //创建评论通知
 	}
@@ -651,7 +650,7 @@ func (s *FeedService) DeleteComment(currentUserID, feedID, commentID uint) error
 	if err := tx.Commit().Error; err != nil { //提交事务
 		return errors.New("删除评论失败")
 	}
-	_ = cache.DeleteFeedDetail(feedID) //删除动态详情缓存
+	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存
 	return nil
 }
 
