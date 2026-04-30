@@ -105,12 +105,16 @@ const MAX_RECONNECT_DELAY_MS = 30000
 const currentUser = computed(() => JSON.parse(sessionStorage.getItem('user') || 'null'))
 const currentUserId = computed(() => currentUser.value?.id || 0)
 
+function initSelectedTargetFromRoute() {
+  const target = Number(route.query.target || route.query.user_id || route.query.to || 0)
+  if (!target) return
+  selectedTargetId.value = target
+  selectedUserName.value = route.query.name ? String(route.query.name) : '私信'
+  ensureSelectedConversationVisible()
+}
+
 onMounted(async () => {
-  const target = Number(route.query.target || 0)
-  if (target) {
-    selectedTargetId.value = target
-    selectedUserName.value = route.query.name ? String(route.query.name) : '私信'
-  }
+  initSelectedTargetFromRoute()
   await connectWSWithAuth()
 })
 
@@ -173,30 +177,81 @@ function sendWSRequest(type, data, timeoutMs = 6000) {
 }
 
 async function loadConversations() {
-  if (!wsConnected.value) return
-
+  ensureSelectedConversationVisible()
   conversationLoading.value = true
   try {
-    const res = await sendWSRequest('message:conversations', { page: 1, page_size: 50 })
-    conversations.value = res?.list || []
-
-    if (!selectedTargetId.value && conversations.value.length > 0) {
-      selectConversation(conversations.value[0])
+    let res
+    if (wsConnected.value && ws?.readyState === WebSocket.OPEN) {
+      res = await sendWSRequest('message:conversations', { page: 1, page_size: 50 })
+    } else {
+      const httpRes = await messageApi.getConversations(1, 50)
+      res = httpRes?.data || httpRes
     }
+    conversations.value = mergeSelectedConversation(res?.list || [])
+
+    if (selectedTargetId.value) {
+      ensureSelectedConversationVisible()
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '获取会话失败')
   } finally {
     conversationLoading.value = false
   }
 }
 
+function selectedConversationPlaceholder() {
+  const targetId = Number(selectedTargetId.value)
+  if (!targetId) return null
+  return {
+    target_id: targetId,
+    target_name: selectedUserName.value || '私信',
+    user: { id: targetId, nickname: selectedUserName.value || '私信' },
+    last_msg: '',
+    last_time: '',
+    unread: 0,
+  }
+}
+
+function mergeSelectedConversation(list) {
+  const merged = Array.isArray(list) ? [...list] : []
+  const placeholder = selectedConversationPlaceholder()
+  if (!placeholder) return merged
+  const exists = merged.some((item) => Number(item.target_id) === Number(placeholder.target_id))
+  if (!exists) {
+    merged.unshift(placeholder)
+  }
+  return merged
+}
+
+function ensureSelectedConversationVisible() {
+  const placeholder = selectedConversationPlaceholder()
+  if (!placeholder) return
+
+  const exists = conversations.value.some((item) => Number(item.target_id) === Number(placeholder.target_id))
+  if (!exists) {
+    conversations.value.unshift(placeholder)
+  }
+}
+
 async function loadMessages(targetId) {
-  if (!targetId || !wsConnected.value) return
+  if (!targetId) return
   try {
-    const res = await sendWSRequest('message:history', { target_user_id: targetId, page: 1, page_size: 100 })
+    let res
+    if (wsConnected.value && ws?.readyState === WebSocket.OPEN) {
+      res = await sendWSRequest('message:history', { target_user_id: targetId, page: 1, page_size: 100 })
+    } else {
+      const httpRes = await messageApi.getHistory(targetId, 1, 100)
+      res = httpRes?.data || httpRes
+    }
     messages.value = (res?.list || []).slice().reverse()
+    const idx = conversations.value.findIndex((item) => Number(item.target_id) === Number(targetId))
+    if (idx >= 0) {
+      conversations.value[idx] = { ...conversations.value[idx], unread: 0 }
+    }
     await nextTick()
     scrollToBottom()
   } catch (e) {
-    // ignore
+    ElMessage.error(e?.message || '获取历史消息失败')
   }
 }
 
@@ -262,7 +317,8 @@ async function send() {
   if (!content || !selectedTargetId.value) return
 
   if (!ws || ws.readyState !== WebSocket.OPEN || !wsConnected.value) {
-    ElMessage.error('消息通道未连接，请稍后重试')
+    ElMessage.error('实时消息通道未连接，请等待重连后再发送')
+    connectWSWithAuth()
     return
   }
 
@@ -314,6 +370,7 @@ async function connectWSWithAuth() {
 function connectWS(token) {
   closeWS()
   clearReconnectTimer()
+  initSelectedTargetFromRoute()
 
   ws = messageApi.connectMessageWS(token)
 
@@ -323,6 +380,8 @@ function connectWS(token) {
     await loadConversations()
     if (selectedTargetId.value) {
       await loadMessages(selectedTargetId.value)
+    } else {
+      messages.value = []
     }
   }
 
@@ -333,6 +392,10 @@ function connectWS(token) {
 
   ws.onerror = () => {
     wsConnected.value = false
+    loadConversations()
+    if (selectedTargetId.value) {
+      loadMessages(selectedTargetId.value)
+    }
   }
 
   ws.onmessage = async (event) => {

@@ -40,19 +40,23 @@ func InitDB() error {
 	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 
-	// 自动迁移
-	err = DB.AutoMigrate(
-		&User{},
-		&Follow{},
-		&Feed{},
-		&Like{},
-		&Comment{},
-		&Visit{},
-		&Message{},
-		&Notification{},
-	)
-	if err != nil {
-		return fmt.Errorf("auto migrate failed: %w", err)
+	if config.AppConfig.Server.AutoMigrate {
+		// 自动迁移仅建议在开发环境开启，生产环境应使用 migration 工具管理表结构。
+		err = DB.AutoMigrate(
+			&User{},
+			&Follow{},
+			&Feed{},
+			&Like{},
+			&Comment{},
+			&Visit{},
+			&Message{},
+			&Conversation{},
+			&Notification{},
+			&OutboxEvent{},
+		)
+		if err != nil {
+			return fmt.Errorf("auto migrate failed: %w", err)
+		}
 	}
 
 	log.Println("Database initialized successfully")

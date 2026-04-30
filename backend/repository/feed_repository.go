@@ -13,6 +13,7 @@ import (
 // - 事务由 BeginTx 开始，并在 service 层提交/回滚。
 type FeedRepository interface {
 	Create(feed *models.Feed) error
+	CreateInTx(tx *gorm.DB, feed *models.Feed) error
 	GetByID(feedID uint) (*models.Feed, error)
 	GetByIDAndUserID(feedID, userID uint) (*models.Feed, error)
 	UpdateByID(feedID uint, updates map[string]any) error
@@ -62,6 +63,10 @@ func (r *feedMySQLRepository) BeginTx() *gorm.DB { return r.db.Begin() }
 
 func (r *feedMySQLRepository) Create(feed *models.Feed) error {
 	return r.db.Create(feed).Error
+}
+
+func (r *feedMySQLRepository) CreateInTx(tx *gorm.DB, feed *models.Feed) error {
+	return tx.Create(feed).Error
 }
 
 func (r *feedMySQLRepository) GetByID(feedID uint) (*models.Feed, error) {
@@ -136,6 +141,7 @@ func (r *feedMySQLRepository) ListByIDs(feedIDs []uint) ([]models.Feed, error) {
 	}
 	return feeds, nil
 }
+
 // 获取比游标时间旧的动态
 func (r *feedMySQLRepository) ListByIDsBeforeCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error) {
 	var feeds []models.Feed
@@ -148,6 +154,7 @@ func (r *feedMySQLRepository) ListByIDsBeforeCursor(feedIDs []uint, cursorTime t
 	}
 	return feeds, nil
 }
+
 // 获取比游标时间新的动态
 func (r *feedMySQLRepository) ListByIDsNewerThanCursor(feedIDs []uint, cursorTime time.Time, cursorID uint) ([]models.Feed, error) {
 	var feeds []models.Feed

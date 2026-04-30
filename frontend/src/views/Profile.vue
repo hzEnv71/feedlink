@@ -406,7 +406,7 @@ function goToProfile(userId) {
 
 function goToChat() {
   if (!user.value?.id) return
-  router.push(`/messages?target=${user.value.id}`)
+  router.push({ path: '/messages', query: { target: user.value.id, name: user.value.nickname || user.value.username || '私信' } })
 }
 
 function goToFeedDetail(feedId) {

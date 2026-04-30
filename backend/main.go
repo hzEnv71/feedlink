@@ -3,13 +3,21 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"feed/cache"
 	"feed/config"
 	"feed/models"
 	"feed/mq"
 	"feed/router"
+	"feed/services"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -44,7 +52,12 @@ func main() {
 		log.Println("✅ Bloom filters initialized successfully")
 	}
 
-	// 6. 设置路由并启动服务器
+	// 6. 启动可靠事件投递 worker
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	go services.NewOutboxService().Start(workerCtx)
+
+	// 7. 设置路由并启动服务器
 	r := router.SetupRouter()
 	port := config.AppConfig.Server.Port
 	addr := fmt.Sprintf(":%d", port)
@@ -57,7 +70,25 @@ func main() {
 	log.Printf("   - 收件箱大小: %d", config.AppConfig.Feed.InboxMaxSize)
 	log.Printf("   - 发件箱大小: %d", config.AppConfig.Feed.OutboxMaxSize)
 
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("Server start failed: %v", err)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: r,
 	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server start failed: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	}
+	log.Println("Server exited")
 }

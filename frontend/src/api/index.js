@@ -133,6 +133,13 @@ export const notificationApi = {
 export const messageApi = {
     connectMessageWS(token) {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        return new WebSocket(`${wsProtocol}//${window.location.host}/api/ws/messages?token=${encodeURIComponent(token)}`)
-    }
+        const base = import.meta.env.VITE_WS_BASE_URL || `${wsProtocol}//${window.location.host}`
+        return new WebSocket(`${base}/api/ws/messages?token=${encodeURIComponent(token)}`)
+    },
+    getConversations(page = 1, pageSize = 50) {
+        return request.get('/messages/conversations', { params: { page, page_size: pageSize } })
+    },
+    getHistory(targetUserId, page = 1, pageSize = 100) {
+        return request.get(`/messages/history/${targetUserId}`, { params: { page, page_size: pageSize } })
+    },
 }

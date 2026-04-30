@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
-	"feed/middleware"
 	"feed/config"
+	"feed/middleware"
 	"feed/realtime"
 	"feed/services"
 	"net/http"
@@ -25,7 +25,9 @@ func NewWSHandler(messageService *services.MessageService) *WSHandler {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		return middleware.IsAllowedOrigin(r.Header.Get("Origin"))
+	},
 }
 
 const (
@@ -100,7 +102,7 @@ func (h *WSHandler) MessageWS(c *gin.Context) {
 		_ = conn.Close()
 	}()
 
-	stopPing := make(chan struct{}) //创建停止ping通道
+	stopPing := make(chan struct{})  //创建停止ping通道
 	go h.keepAlive(client, stopPing) //启动心跳检测
 
 	for {
@@ -116,7 +118,7 @@ func (h *WSHandler) MessageWS(c *gin.Context) {
 		}
 
 		wsCfg := config.AppConfig.WS.SendMessage
-	if pass, retryAfter, _ := middleware.AllowTokenBucket("tb:ws:send:user:"+strconv.FormatUint(uint64(userID), 10), wsCfg.Rate, wsCfg.Burst); !pass {//令牌桶限流 
+		if pass, retryAfter, _ := middleware.AllowTokenBucket("tb:ws:send:user:"+strconv.FormatUint(uint64(userID), 10), wsCfg.Rate, wsCfg.Burst); !pass {
 			_ = client.WriteJSON(realtime.MessageEvent{Type: "message:error", Data: gin.H{"message": "发送过于频繁，请稍后再试", "retry_after": retryAfter}})
 			continue //如果发送过于频繁，则发送错误事件
 		}

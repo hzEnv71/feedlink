@@ -31,7 +31,7 @@ func (h *NotificationHandler) ListNotifications(c *gin.Context) {
 		pageSize = 20
 	}
 
-	list, total, unread, err := h.notificationService.ListNotifications(userID, page, pageSize)//获取通知列表
+	list, total, unread, err := h.notificationService.ListNotifications(userID, page, pageSize) //获取通知列表
 	if err != nil {
 		utils.Error(c, 500, "获取通知失败")
 		return
@@ -51,7 +51,7 @@ func (h *NotificationHandler) ListNotifications(c *gin.Context) {
 // POST /api/notifications/read-all
 func (h *NotificationHandler) MarkAllRead(c *gin.Context) {
 	userID := middleware.GetCurrentUserID(c)
-	if err := h.notificationService.MarkAllRead(userID); err != nil {//标记已读
+	if err := h.notificationService.MarkAllRead(userID); err != nil { //标记已读
 		utils.Error(c, 500, "标记已读失败")
 		return
 	}

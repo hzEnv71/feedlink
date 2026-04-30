@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 )
 
 // RateLimitByIP 按 IP 做令牌桶限流。
@@ -102,55 +103,66 @@ func AllowTokenBucket(key string, rate float64, burst int) (bool, int, error) {
 	return allowByTokenBucket(key, rate, burst)
 }
 
-// allowByTokenBucket 使用 Redis 实现令牌桶：
-// - tokens: 当前令牌数
-// - ts: 上次补充时间戳（毫秒）
-// - 按 rate 补充至 burst 上限，每次请求消费 1 个令牌
+// allowByTokenBucket 使用 Redis Lua 原子实现令牌桶。
 func allowByTokenBucket(key string, rate float64, burst int) (bool, int, error) {
-	nowMs := time.Now().UnixMilli() //获取当前时间戳
-	tokensKey := key + ":tokens"    //获取令牌数key
-	tsKey := key + ":ts"            //获取上次补充时间戳key
-	pipe := cache.RedisClient.Pipeline()
-	tokensCmd := pipe.Get(cache.Ctx, tokensKey) //获取令牌数
-	tsCmd := pipe.Get(cache.Ctx, tsKey)         //获取上次补充时间戳
-	_, _ = pipe.Exec(cache.Ctx)                 //执行管道
-	tokens := float64(burst)                    //初始化令牌数
-	lastTs := nowMs                             //初始化上次补充时间戳
-	if v, err := tokensCmd.Float64(); err == nil {
-		tokens = v //获取令牌数
+	if rate <= 0 || burst <= 0 {
+		return true, 0, nil
 	}
-	if v, err := tsCmd.Int64(); err == nil {
-		lastTs = v //获取上次补充时间戳
+	expireSec := max(int(math.Ceil(float64(burst)/rate))*2, 2)
+
+	result, err := tokenBucketScript.Run(cache.Ctx, cache.RedisClient, []string{key}, time.Now().UnixMilli(), rate, burst, expireSec).Result()
+	if err != nil {
+		return true, 0, err
 	}
 
-	if nowMs > lastTs { //如果当前时间戳大于上次补充时间戳，则补充令牌
-		deltaSec := float64(nowMs-lastTs) / 1000.0              //计算时间差
-		tokens = math.Min(float64(burst), tokens+deltaSec*rate) //计算补充的令牌数
+	values, ok := result.([]any)
+	if !ok || len(values) < 2 {
+		return true, 0, nil
 	}
+	allowed := parseLuaInt(values[0]) == 1
+	retryAfter := parseLuaInt(values[1])
+	return allowed, retryAfter, nil
+}
 
-	if tokens < 1 { //如果令牌数小于1，则需要补充令牌
-		need := 1 - tokens                           //计算需要补充的令牌数
-		retryAfterSec := int(math.Ceil(need / rate)) //计算需要等待的时间
-		if retryAfterSec < 1 {                       //如果需要等待的时间小于1秒，则设置为1秒
-			retryAfterSec = 1 //设置为1秒
-		}
+var tokenBucketScript = redis.NewScript(`
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local burst = tonumber(ARGV[3])
+local expire = tonumber(ARGV[4])
+local tokensKey = key .. ':tokens'
+local tsKey = key .. ':ts'
+local tokens = tonumber(redis.call('GET', tokensKey))
+local lastTs = tonumber(redis.call('GET', tsKey))
+if tokens == nil then tokens = burst end
+if lastTs == nil then lastTs = now end
+if now > lastTs then
+  local delta = (now - lastTs) / 1000
+  tokens = math.min(burst, tokens + delta * rate)
+end
+if tokens < 1 then
+  local retryAfter = math.ceil((1 - tokens) / rate)
+  if retryAfter < 1 then retryAfter = 1 end
+  redis.call('SET', tokensKey, tokens, 'EX', expire)
+  redis.call('SET', tsKey, now, 'EX', expire)
+  return {0, retryAfter}
+end
+tokens = tokens - 1
+redis.call('SET', tokensKey, tokens, 'EX', expire)
+redis.call('SET', tsKey, now, 'EX', expire)
+return {1, 0}
+`)
 
-		expireSec := int(math.Ceil(float64(burst)/rate)) * 2 //计算过期时间
-		if expireSec < 2 {                                   //如果过期时间小于2秒，则设置为2秒
-			expireSec = 2
-		}
-		_ = cache.RedisClient.Set(cache.Ctx, tokensKey, tokens, time.Duration(expireSec)*time.Second).Err() //设置令牌数
-		_ = cache.RedisClient.Set(cache.Ctx, tsKey, nowMs, time.Duration(expireSec)*time.Second).Err()      //设置上次补充时间戳
-		return false, retryAfterSec, nil                                                                    //返回false，表示不允许访问，retryAfterSec表示需要等待的时间，nil表示没有错误
+func parseLuaInt(v any) int {
+	switch val := v.(type) {
+	case int64:
+		return int(val)
+	case int:
+		return val
+	case string:
+		n, _ := strconv.Atoi(val)
+		return n
+	default:
+		return 0
 	}
-
-	tokens -= 1                                          //消费令牌
-	expireSec := int(math.Ceil(float64(burst)/rate)) * 2 //计算过期时间
-	if expireSec < 2 {                                   //如果过期时间小于2秒，则设置为2秒
-		expireSec = 2
-	}
-	_ = cache.RedisClient.Set(cache.Ctx, tokensKey, tokens, time.Duration(expireSec)*time.Second).Err() //设置令牌数
-	_ = cache.RedisClient.Set(cache.Ctx, tsKey, nowMs, time.Duration(expireSec)*time.Second).Err()      //设置上次补充时间戳
-
-	return true, 0, nil //返回true，表示允许访问，0表示不需要等待，nil表示没有错误
 }

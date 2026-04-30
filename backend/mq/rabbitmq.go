@@ -148,7 +148,7 @@ func declareDeadLetterQueue(ch *amqp.Channel) (amqp.Queue, error) {
 
 // PublishFeed 发布 Feed 推送任务。
 // PublishFeed 发布任务到 MQ；当熔断开启时降级为仅写 outbox，保障发布主链路可用。
-func PublishFeed(feedID, authorID uint) {
+func PublishFeed(feedID, authorID uint) error {
 	msg := FeedMessage{
 		FeedID:    feedID,
 		AuthorID:  authorID,
@@ -157,13 +157,13 @@ func PublishFeed(feedID, authorID uint) {
 
 	if isCircuitOpen() {
 		degradeToOutbox(msg) //降级为发件箱
-		return
+		return nil
 	}
 
 	body, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("[MQ] Marshal message failed: %v", err)
-		return
+		return err
 	}
 
 	publisherMu.Lock()
@@ -172,7 +172,8 @@ func PublishFeed(feedID, authorID uint) {
 	if publisherChan == nil {
 		if err := initPublisher(); err != nil {
 			log.Printf("[MQ] Re-init publisher failed: %v", err)
-			return
+			degradeToOutbox(msg)
+			return err
 		}
 	}
 	//消息幂等键
@@ -199,12 +200,13 @@ func PublishFeed(feedID, authorID uint) {
 		log.Printf("[MQ] Publish feed %d failed: %v", feedID, err)
 		openCircuit(15 * time.Second) //打开熔断器
 		degradeToOutbox(msg)          //降级为发件箱
-		return
+		return err
 	}
 
 	closeCircuit() //关闭熔断器
 
 	log.Printf("[MQ] Feed %d published to queue", feedID)
+	return nil
 }
 
 // publishToQueue 统一发布函数。
@@ -371,35 +373,42 @@ func processDispatch(workerID int, msg FeedMessage, headers amqp.Table) (bool, e
 func dispatchToFollowers(workerID int, msg FeedMessage) error {
 	threshold := config.AppConfig.Feed.PushFanLimit //普通用户推送上限
 
+	var author models.User
+	if err := models.DB.Select("follower_count").Where("id = ?", msg.AuthorID).First(&author).Error; err != nil {
+		return fmt.Errorf("query author follower count failed: %w", err)
+	}
+	if author.FollowerCount > int64(threshold) {
+		log.Printf("[MQ Worker %d] User %d has %d followers, exceeds threshold, keep outbox-only read path", workerID, msg.AuthorID, author.FollowerCount)
+		return nil
+	}
+
 	var followers []models.Follow //粉丝列表
 	if err := models.DB.Where("followed_id = ?", msg.AuthorID).Select("user_id").Find(&followers).Error; err != nil {
 		return fmt.Errorf("query followers failed: %w", err)
 	}
 
-	if len(followers) > threshold { //如果粉丝数超过推送上限，则只读发件箱
-		log.Printf("[MQ Worker %d] User %d has %d followers, exceeds threshold, keep outbox-only read path", workerID, msg.AuthorID, len(followers))
-		return nil
+	followerIDs := make([]uint, 0, len(followers))
+	timelines := make([]models.Timeline, 0, len(followers))
+	now := time.Now()
+	for _, follower := range followers {
+		followerIDs = append(followerIDs, follower.UserID)
+		timelines = append(timelines, models.Timeline{
+			UserID:    follower.UserID,
+			FeedID:    msg.FeedID,
+			AuthorID:  msg.AuthorID,
+			CreatedAt: now,
+		})
 	}
 
-	successCount := 0 //成功推送粉丝数
-	for _, follower := range followers {
-		if err := cache.AddToInbox(follower.UserID, msg.FeedID, msg.Timestamp); err != nil { //将消息添加到收件箱
-			log.Printf("[MQ Worker %d] Push to inbox of user %d failed: %v", workerID, follower.UserID, err)
-			continue
-		}
-		timeline := models.Timeline{ //创建时间线记录
-			UserID:    follower.UserID, //粉丝
-			FeedID:    msg.FeedID,
-			AuthorID:  msg.AuthorID, //原作者
-			CreatedAt: time.Now(),
-		}
-		if err := models.DB.Create(&timeline).Error; err != nil { //创建时间线记录失败，则降级策略：timeline 落库失败不影响主分发路径，避免放大 DB 故障。
-			// 降级策略：timeline 落库失败不影响主分发路径，避免放大 DB 故障。
-			log.Printf("[MQ Worker %d] Create timeline record failed (degraded): %v", workerID, err)
-		}
-		successCount++
+	if err := cache.AddToInboxes(followerIDs, msg.FeedID, msg.Timestamp); err != nil {
+		return fmt.Errorf("batch push to inbox failed: %w", err)
 	}
-	log.Printf("[MQ Worker %d] Feed %d pushed to %d/%d followers' inbox", workerID, msg.FeedID, successCount, len(followers))
+	if len(timelines) > 0 {
+		if err := models.DB.CreateInBatches(&timelines, 500).Error; err != nil {
+			log.Printf("[MQ Worker %d] Create timeline records failed (degraded): %v", workerID, err)
+		}
+	}
+	log.Printf("[MQ Worker %d] Feed %d pushed to %d followers' inbox", workerID, msg.FeedID, len(followers))
 	return nil
 }
 

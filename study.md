@@ -16,7 +16,7 @@
 - 私信 + WebSocket 实时通信
 - 通知中心
 - Redis 缓存与限流
-- RabbitMQ 异步分发（重试、DLQ、幂等）
+- Outbox 可靠事件表 + RabbitMQ 异步分发（重试、DLQ、幂等）
 
 ### 学这个项目你能掌握什么
 
@@ -73,6 +73,7 @@ feed/
 │  ├─ middleware/    # 鉴权、限流等中间件
 │  ├─ mq/            # MQ生产消费、重试、DLQ、熔断
 │  ├─ realtime/      # WebSocket相关
+│  ├─ services/outbox_service.go # Outbox后台轮询投递
 │  ├─ cache/         # 缓存封装
 │  ├─ router/        # 路由注册
 │  └─ config/        # 配置加载
@@ -156,8 +157,10 @@ feed/
 - 纯拉（读扩散）：写轻，但读时聚合成本高。
 
 ### 当前策略
-- **普通用户**：写扩散（push 到粉丝 inbox）
-- **大V用户**：读扩散（只写自己 outbox，读取时再拉取）
+- **发布链路**：先在同一个 MySQL 事务中写入 `feeds` 和 `outbox_events(feed.published)`，由后台 Outbox worker 轮询投递 RabbitMQ。
+- **普通用户**：MQ consumer 写扩散（push 到粉丝 inbox），并批量写 timeline。
+- **大V用户**：MQ consumer 只写自己 outbox，读取时再拉取。
+- **删除链路**：删除动态时写 `feed.deleted` Outbox 事件，由后台 worker 清理 Redis inbox/outbox 和 timeline 冗余记录。
 
 这样做实现了：
 - 普通场景读性能高
@@ -188,10 +191,12 @@ feed/
 - 未读计数
 - 实时消息推送（`message:new`）
 
-### 常见设计
-- 消息先落库再推送（保证可追溯）。
-- 推送失败不影响落库成功（弱依赖处理）。
-- 未读计数可结合 Redis 做快速聚合。
+### 当前设计
+- 消息先落库再推送，保证历史可追溯。
+- 发送消息时在同一个事务中写 `messages`，并 upsert 双方 `conversations` 会话聚合记录。
+- `conversations.unread_count` 保存每个用户维度的未读数，打开历史会话后清零。
+- WebSocket 负责实时发送和 `message:new` 推送。
+- HTTP 兜底接口负责读取会话列表和历史消息，避免 WebSocket 未连接时页面完全空白。
 
 ### 面试可讲
 “为什么用 WS？”
@@ -245,10 +250,12 @@ feed/
 ## 幂等处理
 消费端使用 Redis `SETNX + TTL` 防重复消费，避免重复写 timeline/通知。
 
-## 熔断与降级
+## Outbox、熔断与降级
+- 发布 Feed 时先写 `outbox_events`，由后台 worker 轮询投递 RabbitMQ，避免“写库成功但 MQ 事件丢失”。
 - MQ 发布异常：触发短期开路，避免请求堆积。
-- 熔断期间：降级为仅写 outbox，主流程可继续。
+- 熔断期间：MQ 发布侧降级为仅写作者 outbox，主流程可继续。
 - 消费写 DB 异常：可降级处理，尽量不阻断整条链路。
+- Outbox 事件失败会指数退避重试，超过最大次数进入 `dead` 状态。
 
 ---
 
@@ -308,9 +315,9 @@ feed/
 - `POST /api/feeds/:id/comments`
 
 ### Message / WS
-- `POST /api/messages`
+- `GET /api/ws/messages?token=xxx`
 - `GET /api/messages/conversations`
-- `GET /ws/messages?token=xxx`
+- `GET /api/messages/history/:target_id`
 
 ### Notification
 - `GET /api/notifications`

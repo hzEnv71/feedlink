@@ -19,7 +19,7 @@
 - 私信与 WebSocket 实时通信
 - 通知中心
 - Redis 缓存、限流、幂等
-- RabbitMQ 异步分发、重试、死信队列
+- Outbox 可靠事件表 + RabbitMQ 异步分发、重试、死信队列
 
 你学习这个项目，不是只学 CRUD，而是学一套完整的后端工程思维：
 
@@ -41,7 +41,9 @@ graph TD
     G --> S[业务服务层 Service\n用户 / 关注 / Feed / Timeline / Like / Comment / Message]
     S --> DB[(MySQL\n持久化)]
     S --> R[(Redis\n缓存 / 限流)]
-    S --> MQ[(RabbitMQ\n异步 / 重试 / DLQ)]
+    S --> O[(outbox_events\n可靠事件表)]
+    O --> OW[Outbox Worker\n轮询 / 重试 / dead]
+    OW --> MQ[(RabbitMQ\n异步 / 重试 / DLQ)]
     S --> WS[(WebSocket\n实时推送)]
 ```
 
@@ -49,6 +51,7 @@ graph TD
 
 - **MySQL** 负责“最终数据真相”。
 - **Redis** 负责“快”。
+- **Outbox** 负责“业务写库与异步投递的一致性”。
 - **RabbitMQ** 负责“异步解耦”。
 - **WebSocket** 负责“实时”。
 - **Service 层** 负责“业务规则与流程”。
@@ -182,8 +185,9 @@ sequenceDiagram
 
 ### 3.2 用户发布动态的完整链路
 
-> 当前实现采用“发布入库 + MQ consumer 分流”的模式：
-> - `PublishFeed` 只负责写入动态与投递 MQ；
+> 当前实现采用“业务入库 + Outbox 可靠事件 + MQ consumer 分流”的模式：
+> - `PublishFeed` 在同一个事务中写入动态和 `outbox_events`；
+> - `OutboxService` 后台轮询待发送事件，投递到 RabbitMQ；
 > - MQ consumer 负责判断大V/普通用户，并执行 inbox/outbox 分发；
 > - 大V的读路径以 outbox 拉取为主，普通用户的读路径以 inbox 为主。
 
@@ -202,10 +206,13 @@ sequenceDiagram
     F->>H: 提交 feed 内容
     H->>H: 参数校验
     H->>S: 调用业务层
-    S->>D: 写入动态正文
+    S->>D: 事务写入动态正文
+    S->>D: 同事务写 outbox_events(feed.published)
     D-->>S: 返回 feed_id
     S->>C: 记录 feed bloom / 失效详情缓存
-    S->>Q: 投递发布事件
+    S-->>H: 返回发布成功
+    H-->>F: 响应发布结果
+    S->>Q: Outbox Worker 轮询后投递发布事件
     Q->>W: 消费发布事件
     W->>C: 写作者 outbox
     W->>W: 判断作者是否为大V
@@ -215,8 +222,6 @@ sequenceDiagram
     else 大V
         W->>W: 仅保留 outbox 读路径
     end
-    S-->>H: 返回成功
-    H-->>F: 响应发布结果
 ```
 
 ### 3.3 私信实时到达流程

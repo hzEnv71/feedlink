@@ -1,7 +1,11 @@
 package middleware
 
 import (
+	"feed/config"
 	"net/http"
+	"net/url"
+	"slices"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,9 +31,35 @@ func CorsMiddleware() gin.HandlerFunc {
 }
 
 func setCORSHeaders(c *gin.Context) {
-	c.Header(allowOriginHeader, "*")
+	origin := c.GetHeader("Origin")
+	if IsAllowedOrigin(origin) {
+		c.Header(allowOriginHeader, origin)
+		c.Header(allowCredentialsHeader, "true")
+	}
 	c.Header(allowMethodsHeader, "GET, POST, PUT, DELETE, OPTIONS")
 	c.Header(allowHeadersHeader, "Origin, Content-Type, Authorization, Accept")
 	c.Header(exposeHeadersHeader, "Content-Length, Content-Type")
-	c.Header(allowCredentialsHeader, "true")
+}
+
+// IsAllowedOrigin 判断请求来源是否在配置白名单中。
+func IsAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	if slices.Contains(config.AppConfig.CORS.AllowOrigins, origin) {
+		return true
+	}
+	if config.AppConfig.Server.Mode == "debug" {
+		return isLocalDevOrigin(origin)
+	}
+	return false
+}
+
+func isLocalDevOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

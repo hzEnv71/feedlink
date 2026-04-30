@@ -70,6 +70,24 @@ func AddToInbox(userID, feedID uint, timestamp float64) error {
 	return nil
 }
 
+// AddToInboxes 批量将 feedID 添加到多个用户收件箱，并按配置修剪大小。
+func AddToInboxes(userIDs []uint, feedID uint, timestamp float64) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	pipe := RedisClient.Pipeline()
+	maxSize := int64(config.AppConfig.Feed.InboxMaxSize)
+	for _, userID := range userIDs {
+		key := fmt.Sprintf(KeyInbox, userID)
+		pipe.ZAdd(Ctx, key, &redis.Z{Score: timestamp, Member: feedID})
+		if maxSize > 0 {
+			pipe.ZRemRangeByRank(Ctx, key, 0, -maxSize-1)
+		}
+	}
+	_, err := pipe.Exec(Ctx)
+	return err
+}
+
 // AddToOutbox 将 feedID 添加到发件箱。
 func AddToOutbox(userID, feedID uint, timestamp float64) error {
 	key := fmt.Sprintf(KeyOutbox, userID)
@@ -289,6 +307,7 @@ func trimSortedSetByMaxSize(key string, maxSize int64) {
 	_ = RedisClient.ZRemRangeByRank(Ctx, key, 0, -maxSize-1).Err() //修剪有序集合，保持有序集合大小不超过配置的大小
 }
 
+// 按时间倒序获取有序集合中的元素
 func getSortedSetByRangeDesc(key string, offset, limit int64) ([]string, error) {
 	if limit <= 0 {
 		return []string{}, nil
@@ -303,13 +322,14 @@ func withJitter(baseTTL, maxJitter time.Duration) time.Duration {
 	jitter := time.Duration(rand.Int63n(int64(maxJitter)))
 	return baseTTL + jitter
 }
-//删除缓存，失败时按次数异步重试。
+
+// 删除缓存，失败时按次数异步重试。
 func deleteWithRetry(deleteFn func() error, onRetry func(), ttlFallback time.Duration) {
 	if ttlFallback <= 0 {
 		ttlFallback = 24 * time.Hour
 	}
 	if err := deleteFn(); err != nil {
-		onRetry()//添加重试次数计数器
+		onRetry() //添加重试次数计数器
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()

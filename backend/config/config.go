@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -21,11 +22,14 @@ type Config struct {
 	Upload    UploadConfig    `mapstructure:"upload"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 	WS        WSConfig        `mapstructure:"ws"`
+	CORS      CORSConfig      `mapstructure:"cors"`
+	Outbox    OutboxConfig    `mapstructure:"outbox"`
 }
 
 type ServerConfig struct {
-	Port int    `mapstructure:"port"`
-	Mode string `mapstructure:"mode"`
+	Port        int    `mapstructure:"port"`
+	Mode        string `mapstructure:"mode"`
+	AutoMigrate bool   `mapstructure:"auto_migrate"`
 }
 
 type DatabaseConfig struct {
@@ -86,18 +90,31 @@ type UploadConfig struct {
 
 // RateLimitConfig 令牌桶限流配置。
 type RateLimitConfig struct {
-	LoginIP      TokenBucketConfig `mapstructure:"login_ip"`
-	RegisterIP   TokenBucketConfig `mapstructure:"register_ip"`
-	PublishFeed  TokenBucketConfig `mapstructure:"publish_feed"`
-	RepostFeed   TokenBucketConfig `mapstructure:"repost_feed"`
-	LikeFeed     TokenBucketConfig `mapstructure:"like_feed"`
-	CommentFeed  TokenBucketConfig `mapstructure:"comment_feed"`
-	SendMessage  TokenBucketConfig `mapstructure:"send_message"`
+	LoginIP     TokenBucketConfig `mapstructure:"login_ip"`
+	RegisterIP  TokenBucketConfig `mapstructure:"register_ip"`
+	PublishFeed TokenBucketConfig `mapstructure:"publish_feed"`
+	RepostFeed  TokenBucketConfig `mapstructure:"repost_feed"`
+	LikeFeed    TokenBucketConfig `mapstructure:"like_feed"`
+	CommentFeed TokenBucketConfig `mapstructure:"comment_feed"`
+	SendMessage TokenBucketConfig `mapstructure:"send_message"`
 }
 
 // WSConfig WebSocket 限流配置。
 type WSConfig struct {
 	SendMessage TokenBucketConfig `mapstructure:"send_message"`
+}
+
+// CORSConfig 跨域与 WebSocket Origin 白名单配置。
+type CORSConfig struct {
+	AllowOrigins []string `mapstructure:"allow_origins"`
+}
+
+// OutboxConfig 可靠事件投递配置。
+type OutboxConfig struct {
+	BatchSize      int `mapstructure:"batch_size"`
+	PollIntervalMS int `mapstructure:"poll_interval_ms"`
+	MaxRetries     int `mapstructure:"max_retries"`
+	MaxBackoffMS   int `mapstructure:"max_backoff_ms"`
 }
 
 // TokenBucketConfig 配置单个接口的 rate/burst。
@@ -113,6 +130,8 @@ func InitConfig() error {
 	viper.SetConfigType(defaultConfigType)
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("./config")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
 		return fmt.Errorf("read config failed: %w", err)
@@ -123,9 +142,32 @@ func InitConfig() error {
 		return fmt.Errorf("unmarshal config failed: %w", err)
 	}
 
-	setRateLimitDefaults(&cfg.RateLimit)
+	setDefaults(cfg)
 	AppConfig = cfg
 	return nil
+}
+
+func setDefaults(cfg *Config) {
+	if cfg.Server.Mode == "" {
+		cfg.Server.Mode = "debug"
+	}
+	setRateLimitDefaults(&cfg.RateLimit)
+	setTokenBucketDefault(&cfg.WS.SendMessage, 0.8, 40)
+	if len(cfg.CORS.AllowOrigins) == 0 {
+		cfg.CORS.AllowOrigins = []string{"http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"}
+	}
+	if cfg.Outbox.BatchSize <= 0 {
+		cfg.Outbox.BatchSize = 50
+	}
+	if cfg.Outbox.PollIntervalMS <= 0 {
+		cfg.Outbox.PollIntervalMS = 2000
+	}
+	if cfg.Outbox.MaxRetries <= 0 {
+		cfg.Outbox.MaxRetries = 10
+	}
+	if cfg.Outbox.MaxBackoffMS <= 0 {
+		cfg.Outbox.MaxBackoffMS = 300000
+	}
 }
 
 func setRateLimitDefaults(c *RateLimitConfig) {

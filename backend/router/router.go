@@ -40,6 +40,7 @@ func SetupRouter() *gin.Engine {
 	uploadHandler := handlers.NewUploadHandler()
 	notificationHandler := handlers.NewNotificationHandler(notificationService)
 	wsHandler := handlers.NewWSHandler(messageService)
+	messageHandler := handlers.NewMessageHandler(messageService)
 	opsHandler := handlers.NewOpsHandler()
 
 	// API路由组
@@ -96,8 +97,10 @@ func SetupRouter() *gin.Engine {
 			authenticated.DELETE("/feeds/:id/comments/:comment_id", middleware.RateLimitByFeedFromContext("delete_comment", rl.CommentFeed.Rate, rl.CommentFeed.Burst), feedHandler.DeleteComment) //令牌桶限流
 			authenticated.GET("/feeds/:id/comments", feedHandler.GetComments)
 
-			// 私信（发送/接收都走 WebSocket）
+			// 私信：WebSocket 负责实时发送/接收，HTTP 提供会话与历史兜底读取。
 			authenticated.GET("/ws/messages", wsHandler.MessageWS)
+			authenticated.GET("/messages/conversations", messageHandler.ListConversations)
+			authenticated.GET("/messages/history/:target_id", messageHandler.GetHistory)
 
 			// 通知中心
 			authenticated.GET("/notifications", notificationHandler.ListNotifications)

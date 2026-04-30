@@ -5,7 +5,6 @@ import (
 	"errors"
 	"feed/cache"
 	"feed/models"
-	"feed/mq"
 	"feed/repository"
 	"log"
 	"strconv"
@@ -23,6 +22,7 @@ import (
 type FeedService struct {
 	userService         *UserService
 	feedRepo            repository.FeedRepository
+	outboxRepo          repository.OutboxRepository
 	userRepo            repository.UserRepository
 	followRepo          repository.FollowRepository
 	notificationService *NotificationService
@@ -33,6 +33,7 @@ func NewFeedService() *FeedService {
 	return &FeedService{
 		userService:         &UserService{},
 		feedRepo:            repository.NewFeedRepository(models.DB),
+		outboxRepo:          repository.NewOutboxRepository(models.DB),
 		userRepo:            repository.NewUserRepository(models.DB),
 		followRepo:          repository.NewFollowRepository(models.DB),
 		notificationService: NewNotificationService(),
@@ -61,20 +62,49 @@ type RepostFeedRequest struct {
 
 // PublishFeed 发布动态：
 // 1) 先做参数约束（文案/图片/视频至少其一）；
-// 2) 写入 feed 主表；
-// 3) 投递 MQ 走异步分发。
+// 2) 同一事务写入 feed 主表和 outbox 事件；
+// 3) 由后台 worker 可靠投递 MQ。
 func (s *FeedService) PublishFeed(userID uint, req *CreateFeedRequest) (*models.Feed, error) {
 	if req.Content == "" && req.Images == "" && req.Videos == "" {
 		return nil, errors.New("请输入文案、上传图片或视频")
 	}
-	//创建动态
 	feed := &models.Feed{UserID: userID, Content: req.Content, Images: req.Images, Videos: req.Videos, FeedType: models.FeedTypeOriginal}
-	if err := s.feedRepo.Create(feed); err != nil { //创建动态
+	tx := s.feedRepo.BeginTx()
+	if err := s.feedRepo.CreateInTx(tx, feed); err != nil {
+		tx.Rollback()
 		return nil, errors.New("发布失败")
 	}
-	cache.AddFeedID(feed.ID)        //添加动态ID到布隆过滤器
-	mq.PublishFeed(feed.ID, userID) //投递MQ 走异步分发
+	if err := s.createFeedPublishedOutbox(tx, feed.ID, userID); err != nil {
+		tx.Rollback()
+		return nil, errors.New("发布失败")
+	}
+	if err := tx.Commit().Error; err != nil {
+		return nil, errors.New("发布失败")
+	}
+	cache.AddFeedID(feed.ID) //添加动态ID到布隆过滤器
 	return feed, nil
+}
+
+func (s *FeedService) createFeedPublishedOutbox(tx *gorm.DB, feedID, userID uint) error {
+	return s.createOutboxEvent(tx, models.OutboxEventTypeFeedPublished, feedID, map[string]any{"feed_id": feedID, "author_id": userID})
+}
+
+func (s *FeedService) createFeedDeletedOutbox(tx *gorm.DB, feedID, userID uint) error {
+	return s.createOutboxEvent(tx, models.OutboxEventTypeFeedDeleted, feedID, map[string]any{"feed_id": feedID, "author_id": userID})
+}
+
+func (s *FeedService) createOutboxEvent(tx *gorm.DB, eventType string, aggregateID uint, payloadData map[string]any) error {
+	payload, err := json.Marshal(payloadData)
+	if err != nil {
+		return err
+	}
+	return s.outboxRepo.CreateInTx(tx, &models.OutboxEvent{
+		EventType:   eventType,
+		AggregateID: aggregateID,
+		Payload:     string(payload),
+		Status:      models.OutboxEventStatusPending,
+		NextRetryAt: time.Now(),
+	})
 }
 
 // 更新动态
@@ -135,11 +165,14 @@ func (s *FeedService) RepostFeed(userID uint, req *RepostFeedRequest) (*models.F
 		tx.Rollback()
 		return nil, err
 	}
+	if err := s.createFeedPublishedOutbox(tx, feed.ID, userID); err != nil {
+		tx.Rollback()
+		return nil, errors.New("转发失败")
+	}
 	if err := tx.Commit().Error; err != nil { //提交事务
 		return nil, errors.New("转发失败")
 	}
-	cache.AddFeedID(feed.ID)        //添加动态ID到布隆过滤器
-	mq.PublishFeed(feed.ID, userID) //投递MQ 走异步分发
+	cache.AddFeedID(feed.ID) //添加动态ID到布隆过滤器
 	return feed, nil
 }
 
@@ -152,22 +185,19 @@ func (s *FeedService) DeleteFeed(feedID, userID uint) error {
 		}
 		return err
 	}
-	//删除动态
-	if err := s.feedRepo.Delete(feed); err != nil {
+	tx := s.feedRepo.BeginTx()
+	if err := tx.Delete(feed).Error; err != nil {
+		tx.Rollback()
+		return errors.New("删除失败")
+	}
+	if err := s.createFeedDeletedOutbox(tx, feedID, userID); err != nil {
+		tx.Rollback()
+		return errors.New("删除失败")
+	}
+	if err := tx.Commit().Error; err != nil {
 		return errors.New("删除失败")
 	}
 	cache.DeleteFeedDetailWithRetry(feedID, 24*time.Hour) //删除动态详情缓存 带异步重试
-
-	key := strconv.FormatUint(uint64(feedID), 10)
-	_ = cache.RedisClient.ZRem(cache.Ctx, "outbox:"+strconv.FormatUint(uint64(userID), 10), key).Err() //删除发件箱
-
-	go func() {
-		timelines, _ := s.feedRepo.ListTimelinesByFeedID(feedID) //获取时间线
-		for _, tl := range timelines {
-			cache.RemoveFromInbox(tl.UserID, feedID) //删除收件箱
-		}
-		_ = s.feedRepo.DeleteTimelineByFeedID(feedID) //删除时间线
-	}()
 
 	return nil //返回成功
 }
@@ -706,7 +736,7 @@ func parseTimelineCursor(cursor string) (time.Time, uint) {
 	if len(parts) != 2 {
 		return maxTimelineTime, ^uint(0) //返回最大时间线时间
 	}
-	Milli, err := strconv.ParseInt(parts[0], 10, 64)
+	milli, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		return maxTimelineTime, ^uint(0) //返回最大时间线时间
 	}
@@ -714,7 +744,7 @@ func parseTimelineCursor(cursor string) (time.Time, uint) {
 	if err != nil {
 		return maxTimelineTime, ^uint(0) //返回最大时间线时间
 	}
-	return time.Unix(0, Milli), uint(id) //返回时间线时间
+	return time.UnixMilli(milli), uint(id) //返回时间线时间
 }
 
 // 构建时间线游标

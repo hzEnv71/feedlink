@@ -1,14 +1,19 @@
-# FeedLink 社交系统（时间线 + 私信 + 通知中心）
+# FeedLink 社交系统（推拉混合 Feed + 私信 + 通知中心）
 
-一个基于 Go + Vue 的社交系统，当前已实现：
-- 用户体系（注册/登录/JWT）
-- 关注关系
-- 动态发布与时间线（推拉混合）
-- 点赞/评论/转发
-- 私信会话 + WebSocket 实时消息
-- 通知中心（点赞/评论/关注）
-- RabbitMQ 异步分发（重试、DLQ、幂等）
-- Redis 缓存与令牌桶限流
+FeedLink 是一个基于 Go + Vue 的社交系统，核心目标是实现接近微博/朋友圈的信息流、关注关系、互动通知和私信能力。当前版本已经从简单 CRUD 演进为带有缓存、限流、可靠异步和实时通信的工程化实现。
+
+## 当前已实现能力
+
+- 用户体系：注册、登录、JWT 鉴权、资料修改、用户搜索、访问记录。
+- 关注关系：关注/取关、粉丝列表、关注列表、Redis Set 缓存。
+- Feed 动态：发布、删除、转发、详情、搜索、点赞、评论。
+- 时间线：推拉混合，普通用户写扩散，大 V 读扩散，游标分页。
+- 可靠异步：Outbox 事件表 + 后台 worker + RabbitMQ 分发。
+- 私信系统：WebSocket 实时消息 + HTTP 会话/历史兜底接口 + conversations 会话表。
+- 通知中心：点赞、评论、关注通知，分页与一键已读。
+- Redis 能力：详情缓存、用户缓存、布隆过滤器、分布式锁、Lua 原子令牌桶限流。
+- MQ 能力：主队列、重试队列、死信队列、幂等、熔断、降级。
+- 运维观测：MQ 指标、缓存指标。
 
 ---
 
@@ -16,302 +21,247 @@
 
 ```mermaid
 flowchart TB
-    U[用户 / 浏览器] --> FE[前端 Vue3]
-    FE --> API[后端 API / Router / Handler]
-    API --> MW[Middleware 鉴权 / 限流]
+    U[用户 / 浏览器] --> FE[Vue3 前端]
+    FE -->|HTTP| API[后端 API / Gin Router]
+    FE -->|WebSocket| WS[WebSocket 私信实时通道]
+    API --> MW[鉴权 / CORS / 限流]
     MW --> SVC[Service 业务层]
     SVC --> DB[(MySQL)]
     SVC --> R[(Redis)]
-    SVC --> MQ[(RabbitMQ)]
-    SVC --> WS[WebSocket 实时推送]
-    MQ --> C[消费者 / 异步任务]
-    C --> DB
-    C --> R
+    SVC --> OB[(outbox_events)]
+    OB --> OW[Outbox Worker]
+    OW --> MQ[(RabbitMQ)]
+    MQ --> MC[MQ Consumer]
+    MC --> DB
+    MC --> R
+    WS --> RT[realtime 连接管理]
+    RT --> SVC
 ```
 
-## 登录与鉴权流程
+---
+
+## Feed 发布与分发链路
+
+当前 Feed 发布采用 **Outbox + RabbitMQ + 推拉混合**。
 
 ```mermaid
 sequenceDiagram
     participant F as 前端
-    participant A as Auth API
-    participant M as Middleware
-    participant S as Service
+    participant H as Feed Handler
+    participant S as Feed Service
     participant D as MySQL
-
-    F->>A: 提交账号密码
-    A->>S: 调用登录逻辑
-    S->>D: 查询用户与校验密码
-    D-->>S: 返回用户信息
-    S-->>A: 签发 JWT
-    A-->>F: 返回 token
-    F->>M: 后续请求携带 token
-    M->>M: 校验 token 有效性
-    M-->>F: 放行或返回 401
-```
-
-## 发布动态流程
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant F as 前端
-    participant H as Handler
-    participant S as Service
-    participant D as MySQL
-    participant R as Redis
+    participant O as outbox_events
+    participant W as Outbox Worker
     participant Q as RabbitMQ
+    participant C as MQ Consumer
+    participant R as Redis
 
-    U->>F: 点击发布
-    F->>H: 提交动态内容
-    H->>H: 参数校验
-    H->>S: 进入业务层
-    S->>D: 写入动态正文
-    D-->>S: 返回 feed_id
-    S->>R: 失效/更新缓存
-    S->>S: 判断是否大 V
-    alt 普通用户
-        S->>Q: 推送分发事件
-    else 大 V
-        S->>D: 写入 outbox
+    F->>H: POST /api/feeds
+    H->>S: 参数校验后调用 PublishFeed
+    S->>D: 事务写入 feeds
+    S->>O: 同事务写 feed.published 事件
+    S-->>H: 返回发布成功
+    W->>O: 每 poll_interval_ms 扫描待投递事件
+    W->>Q: 投递 FeedMessage
+    Q->>C: MQ consumer 消费
+    C->>R: 写作者 outbox
+    C->>C: 判断 is_big_v / follower_count
+    alt 普通用户且粉丝数未超阈值
+        C->>R: pipeline 批量写粉丝 inbox
+        C->>D: 批量写 timeline
+    else 大 V 或粉丝数超过 push_fan_limit
+        C->>C: 仅保留作者 outbox，读路径拉取
     end
-    S-->>H: 返回成功
-    H-->>F: 响应发布结果
 ```
 
-## 时间线推拉混合流程
+### 为什么使用 Outbox
+
+发布 Feed 时，Feed 主表和分发事件需要保持一致。如果直接在写库后投递 MQ，服务可能在“写库成功、投递 MQ 前”宕机，导致动态存在但永远不会分发。当前实现将 `feeds` 和 `outbox_events` 放在同一个 DB 事务中，后台 worker 再可靠投递。
+
+### Outbox 配置
+
+`backend/config.yaml`：
+
+```yaml
+outbox:
+  batch_size: 50
+  poll_interval_ms: 2000
+  max_retries: 10
+  max_backoff_ms: 300000
+```
+
+含义：
+
+- `batch_size`：每次最多扫描多少条事件。
+- `poll_interval_ms`：后台 worker 轮询间隔，当前默认 2 秒。
+- `max_retries`：最大重试次数，超过后进入 `dead` 状态。
+- `max_backoff_ms`：指数退避最大间隔。
+
+Outbox 事件状态：
+
+- `pending`：待处理。
+- `failed`：处理失败，等待下次重试。
+- `sent`：处理成功。
+- `dead`：超过最大重试次数，需要人工排查或重放。
+
+---
+
+## 时间线推拉混合
 
 ```mermaid
 flowchart TD
-    A[用户打开首页] --> B[请求 /timeline]
-    B --> C{Redis 是否命中}
-    C -- 是 --> D[直接返回缓存结果]
-    C -- 否 --> E[回源 MySQL / inbox / outbox]
-    E --> F[合并 own + push + pull]
-    F --> G[去重 / 排序 / 游标分页]
-    G --> H[返回前端]
+    A[用户请求 /api/timeline] --> B[读取自己的动态]
+    B --> C[读取 Redis inbox 推模式动态]
+    C --> D[读取关注大 V 的 outbox 拉模式动态]
+    D --> E[合并 own + inbox + outbox]
+    E --> F[去重 / 按 created_at,id 排序]
+    F --> G[游标分页返回 next_cursor / has_more]
 ```
 
-## 私信与实时消息流程
+策略：
 
-```mermaid
-flowchart TD
-    A[用户 A 发送消息] --> B[消息写入数据库]
-    B --> C{接收者是否在线}
-    C -- 在线 --> D[WebSocket 立即推送]
-    C -- 离线 --> E[消息保留在数据库]
-    E --> F[用户下次上线拉取未读消息]
-```
+- 普通用户：发布后写扩散到粉丝 `inbox:{user_id}`。
+- 大 V：只写作者 `outbox:{author_id}`，粉丝读取时间线时再拉取。
+- 双保险：MQ consumer 会先看 `is_big_v`，并额外根据 `follower_count > push_fan_limit` 避免写爆。
 
-## MQ 重试与死信队列
+---
 
-```mermaid
-flowchart TD
-    P[生产者] --> M[主队列]
-    M --> C[消费者]
-    C -->|成功| OK[结束]
-    C -->|可重试失败| R[重试队列]
-    C -->|超过阈值| DLQ[死信队列 DLQ]
-    R --> M
-```
+## 删除 Feed 的可靠清理
 
-## 关注关系图
-
-```mermaid
-flowchart LR
-    U1[用户 A] -->|关注| U2[用户 B]
-    U1 -->|取关| U3[关系解除]
-    U2 -->|粉丝列表| S1[(MySQL / Redis)]
-    U1 -->|关注列表| S1
-    S1 -->|是否已关注| UI[前端状态展示]
-```
-
-## 点赞 / 评论链路图
+删除动态时不再直接起裸 goroutine 清理，而是写入 `feed.deleted` Outbox 事件。
 
 ```mermaid
 sequenceDiagram
-    participant U as 用户
-    participant F as 前端
-    participant H as Handler
-    participant S as Service
+    participant S as Feed Service
     participant D as MySQL
+    participant O as outbox_events
+    participant W as Outbox Worker
     participant R as Redis
-    participant Q as RabbitMQ
 
-    U->>F: 点赞 / 评论
-    F->>H: 提交请求
-    H->>S: 调用业务层
-    S->>D: 写入点赞/评论记录
-    D-->>S: 返回结果
-    S->>R: 失效相关缓存
-    S->>Q: 发送通知事件
-    Q-->>S: 异步消费通知
-    S-->>H: 返回成功
-    H-->>F: 前端更新状态
+    S->>D: 事务删除 feed
+    S->>O: 同事务写 feed.deleted
+    W->>O: 扫描删除事件
+    W->>R: 删除作者 outbox 中的 feed_id
+    W->>R: 删除粉丝 inbox 中的 feed_id
+    W->>D: 删除 timeline 冗余记录
 ```
 
-## Redis 缓存命中 / 回源图
+这样可以避免服务进程退出导致清理任务丢失，失败时也会进入 Outbox 重试。
+
+---
+
+## 私信系统
+
+当前私信由三部分组成：
+
+1. `messages`：保存每条私信记录。
+2. `conversations`：每个用户维度的会话聚合表，用于快速展示联系人和未读数。
+3. WebSocket + HTTP：WebSocket 负责实时收发，HTTP 负责会话列表与历史消息兜底读取。
+
+### 私信发送流程
 
 ```mermaid
-flowchart TD
-    A[请求动态详情 / 用户资料] --> B{Redis 是否命中}
-    B -- 命中 --> C[直接返回缓存]
-    B -- 未命中 --> D[回源 MySQL]
-    D --> E[构建响应数据]
-    E --> F[回填 Redis]
-    F --> G[返回前端]
+sequenceDiagram
+    participant F as 前端
+    participant W as WebSocket Handler
+    participant S as Message Service
+    participant D as MySQL
+    participant R as realtime hub
+
+    F->>W: message:send
+    W->>S: SendMessage
+    S->>D: 事务写 messages
+    S->>D: 同事务 upsert 双方 conversations
+    S->>R: 若接收方在线，推送 message:new
+    W-->>F: message:ack
 ```
 
-## 令牌桶限流图
+### 会话与历史读取
 
-```mermaid
-flowchart TD
-    A[请求进入] --> B[读取令牌桶状态]
-    B --> C{是否有令牌}
-    C -- 有 --> D[放行请求]
-    C -- 无 --> E[拒绝 / 降级 / 等待]
-    D --> F[按速率补充令牌]
-```
+WebSocket 事件：
 
-## 主要业务链路图
+- `message:conversations`
+- `message:history`
+- `message:send`
+- `message:new`
+- `message:ack`
+- `message:error`
+
+HTTP 兜底接口：
+
+- `GET /api/messages/conversations`
+- `GET /api/messages/history/:target_id`
+
+这样即使 WebSocket 暂时未连接，联系人列表和历史聊天记录仍然可以加载。只有实时发送仍要求 WebSocket 连接正常。
+
+### 未读数
+
+- 接收方收到新消息时，接收方对应的 `conversations.unread_count + 1`。
+- 打开会话历史时，后端标记消息已读，并将当前用户该会话的 `unread_count` 清零。
+
+---
+
+## Redis 与限流
+
+### 缓存
+
+- Feed 详情缓存。
+- 用户资料缓存。
+- 关注/粉丝 Redis Set。
+- inbox/outbox Redis ZSet。
+- 布隆过滤器防缓存穿透。
+- 写后主动失效缓存。
+- TTL 随机抖动防缓存雪崩。
+- 分布式锁降低热点回源并发。
+
+### 令牌桶限流
+
+当前令牌桶基于 Redis Lua 脚本实现，保证并发下扣减令牌的原子性。
+
+限流维度：
+
+- IP：登录、注册。
+- 用户：发布、转发、私信。
+- Feed：点赞、评论等热点资源操作。
+
+配置位置：`backend/config.yaml` 的 `rate_limit` 与 `ws`。
+
+---
+
+## MQ 可靠性
+
+RabbitMQ 拓扑：
 
 ```mermaid
 flowchart LR
-    A[注册 / 登录] --> B[关注 / 取关]
-    B --> C[发布动态]
-    C --> D[时间线分发]
-    C --> E[点赞 / 评论 / 转发]
-    E --> F[通知中心]
-    F --> G[WebSocket 实时推送]
+    P[Producer] --> M[主队列]
+    M --> C[Consumer]
+    C -->|成功 ack| OK[完成]
+    C -->|失败且未超限| R[重试队列]
+    R -->|TTL 到期| M
+    C -->|超过最大重试| D[死信队列 DLQ]
 ```
 
-## 界面截图
+已实现能力：
 
-![图片的描述](./pic/屏幕截图%202026-04-10%20204004.png)
-![图片的描述](./pic/屏幕截图%202026-04-10%20204030.png)
-![图片的描述](./pic/屏幕截图%202026-04-10%20204051.png)
-![图片的描述](./pic/屏幕截图%202026-04-10%20204421.png)
-![图片的描述](./pic/屏幕截图%202026-04-10%20204433.png)
-
-## 技术栈
-
-### 后端（`backend/`）
-- Go 1.25+
-- Gin
-- GORM + MySQL
-- Redis
-- RabbitMQ
-- JWT
-
-### 前端（`frontend/`）
-- Vue 3（Composition API）
-- Vue Router
-- Pinia
-- Axios
-- Element Plus
-- Vite
-
----
-
-## 当前核心功能（按模块）
-
-### 1. 账号与用户
-- 注册 / 登录（JWT）
-- 获取当前用户资料、更新资料（昵称/头像/签名）
-- 用户搜索
-- 最近访客记录（visit）
-
-### 2. 关注关系
-- 关注 / 取关
-- 粉丝/关注列表
-- 关注关系缓存（Redis Set）
-
-### 3. 动态系统
-- 发布动态（文案/图片/视频）
-- 转发动态
-- 删除动态
-- 点赞 / 取消点赞
-- 评论 / 删除评论
-- 动态详情
-
-### 4. 时间线（核心）
-- 推拉混合：
-  - 普通用户写扩散（push -> inbox）
-  - 大V读扩散（pull <- outbox）
-- 聚合 own + push + pull 后去重排序
-- 游标分页：`cursor / next_cursor / has_more`
-
-### 5. 私信与实时消息
-- 私信发送
-- 会话列表与会话消息
-- 未读计数
-- WebSocket 实时推送（`message:new`）
-
-### 6. 通知中心
-- 通知类型：`like / comment / follow`
-- 通知列表分页
-- 未读统计
-- 一键全部已读
-
-### 7. 搜索中心
-- 全局搜索入口
-- 搜索结果页支持 Tab：
-  - 用户
-  - 动态
-
-### 8. 运维小面板（前端）
-- 前端提供 `/ops` 运维页面
-- 可查看 MQ 熔断/降级关键指标
-- 入口位于「设置 -> 运维面板」
-
----
-
-## 可用性与高并发能力（已实现）
-
-### 1) MQ 可靠性
-- 主队列 + 重试队列 + 死信队列（DLQ）
-- 失败重试（延迟重试）
-- 超过重试次数进入 DLQ
-- 消费幂等（Redis `SETNX + TTL`）
-
-### 2) MQ 降级与熔断
-- MQ 发布失败触发熔断（短期开路）
-- 熔断期间降级为“仅写 outbox”，保障发布主链路
-- 消费侧 DB timeline 写失败降级不阻断主分发
-
-### 3) 缓存策略
-- Feed 详情缓存
-- 用户资料缓存
-- TTL 随机抖动（防雪崩）
-- `singleflight` 防缓存击穿（热点回源合并）
-- 写操作后主动失效关键缓存
-
-### 4) 索引优化
-已在模型层补充核心索引：
-- `feeds(created_at, user_id)`
-- `likes(feed_id, user_id)`
-- `comments(feed_id, created_at)`
-- `messages(to_user_id, is_read, created_at)`
-
-### 5) 搜索优化（Phase 1）
-- 避免全表 `LIKE %keyword%`
-- 改为前缀策略 `keyword%`（可利用索引）
-
-### 6) 限流（令牌桶）
-- Redis 令牌桶限流中间件
-- IP 维度：登录/注册
-- 用户维度：发布/转发/评论/私信
-- 参数可在 `config.yaml` 配置（`rate_limit`）
+- 主队列、重试队列、死信队列。
+- 消费失败延迟重试。
+- Redis `SETNX + TTL` 消费幂等。
+- MQ 发布失败熔断。
+- 熔断时降级为仅写作者 outbox。
+- 运维接口查看 MQ 指标。
 
 ---
 
 ## API 概览
 
 ### Auth
+
 - `POST /api/auth/register`
 - `POST /api/auth/login`
 
 ### User
+
 - `GET /api/users/me`
 - `PUT /api/users/me`
 - `GET /api/users/me/visits`
@@ -319,21 +269,24 @@ flowchart LR
 - `GET /api/users/:id`
 
 ### Follow
+
 - `POST /api/follow/:id`
 - `DELETE /api/follow/:id`
 - `GET /api/users/:id/followers`
 - `GET /api/users/:id/following`
 
 ### Feed / Timeline
+
 - `POST /api/feeds`
 - `POST /api/feeds/repost`
 - `DELETE /api/feeds/:id`
 - `GET /api/feeds/:id`
 - `GET /api/feeds/search`
 - `GET /api/users/:id/feeds`
-- `GET /api/timeline?cursor=0&page_size=20`
+- `GET /api/timeline?cursor=&page_size=20`
 
 ### Like / Comment
+
 - `POST /api/feeds/:id/like`
 - `DELETE /api/feeds/:id/like`
 - `GET /api/feeds/:id/likes`
@@ -342,46 +295,48 @@ flowchart LR
 - `DELETE /api/feeds/:id/comments/:comment_id`
 
 ### Message / WS
-- `POST /api/messages`
+
+- `GET /api/ws/messages?token=xxx`
 - `GET /api/messages/conversations`
-- `GET /api/messages/:target_id`
-- `GET /ws/messages?token=xxx`
+- `GET /api/messages/history/:target_id`
 
 ### Notification
+
 - `GET /api/notifications`
 - `POST /api/notifications/read-all`
 
-### Ops（观测）
+### Ops
+
 - `GET /api/ops/mq/metrics`
+- `GET /api/ops/cache/metrics`
 
 ---
 
 ## 项目结构
 
 ```text
-feed/
+feedlink/
 ├─ backend/
-│  ├─ main.go
+│  ├─ cache/          # Redis 缓存、布隆过滤器、分布式锁
+│  ├─ config/         # Viper 配置加载
+│  ├─ handlers/       # HTTP / WebSocket 入口
+│  ├─ middleware/     # 鉴权、CORS、限流
+│  ├─ models/         # GORM 模型
+│  ├─ mq/             # RabbitMQ 发布、消费、重试、DLQ
+│  ├─ realtime/       # WebSocket 连接管理
+│  ├─ repository/     # 数据访问层
+│  ├─ router/         # 路由注册
+│  ├─ services/       # 核心业务逻辑、Outbox worker
+│  ├─ utils/          # JWT、响应工具
 │  ├─ config.yaml
-│  ├─ cache/
-│  ├─ config/
-│  ├─ handlers/
-│  ├─ middleware/
-│  ├─ models/
-│  ├─ mq/
-│  ├─ realtime/
-│  ├─ repository/
-│  ├─ router/
-│  ├─ services/
-│  └─ utils/
+│  └─ main.go
 ├─ frontend/
-│  ├─ package.json
-│  └─ src/
-│     ├─ api/
-│     ├─ components/
-│     ├─ router/
-│     ├─ stores/
-│     └─ views/
+│  ├─ src/api/        # Axios 与 WebSocket API 封装
+│  ├─ src/views/      # 页面
+│  ├─ src/router/     # 前端路由
+│  ├─ src/stores/     # Pinia
+│  └─ vite.config.js
+├─ docker-compose.yml
 └─ README.md
 ```
 
@@ -389,19 +344,20 @@ feed/
 
 ## 本地运行
 
-### 1) 启动依赖
-请先准备：
-- MySQL
-- Redis
-- RabbitMQ
-
-可使用：
+### 1. 启动依赖
 
 ```bash
 docker compose up -d
 ```
 
-### 2) 启动后端
+默认会启动：
+
+- MySQL：`localhost:3307`
+- Redis：`localhost:6379`
+- RabbitMQ：`localhost:5672`
+- RabbitMQ 管理台：`http://localhost:15672`
+
+### 2. 启动后端
 
 ```bash
 cd backend
@@ -409,9 +365,9 @@ go mod tidy
 go run main.go
 ```
 
-默认：`http://localhost:8080`
+默认地址：`http://localhost:8080`
 
-### 3) 启动前端
+### 3. 启动前端
 
 ```bash
 cd frontend
@@ -419,24 +375,46 @@ npm install
 npm run dev
 ```
 
----
-
-## 配置说明（重点）
-
-后端配置文件：`backend/config.yaml`
-
-重点可调参数：
-- `feed.*`：大V阈值、推拉边界、收发件箱大小
-- `rabbitmq.*`：重试/DLQ/幂等 TTL
-- `rate_limit.*`：令牌桶限流速率与突发容量
+当前 Vite 默认端口：`http://localhost:3000`
 
 ---
 
-## 未来可继续增强
-- 计数异步聚合（点赞/评论 Redis 累积后回刷 DB）
-- Prometheus + Grafana 指标监控
-- 更细粒度的熔断与降级开关
-- 搜索升级到 FULLTEXT / ES
+## 配置说明
+
+核心配置文件：`backend/config.yaml`
+
+重点配置：
+
+- `server.auto_migrate`：是否启动时自动迁移表结构，开发环境可开，生产建议关闭。
+- `cors.allow_origins`：允许的前端 Origin；debug 模式下本机端口会放行。
+- `feed.big_v_threshold`：大 V 判断阈值。
+- `feed.push_fan_limit`：普通用户写扩散粉丝数上限。
+- `outbox.*`：Outbox worker 扫描、重试和退避配置。
+- `rabbitmq.*`：队列、重试队列、死信队列、幂等 TTL。
+- `rate_limit.*`：HTTP 接口令牌桶限流。
+- `ws.send_message`：WebSocket 发送消息限流。
+
+---
+
+## 数据表补充说明
+
+除常规用户、关注、动态、点赞、评论、通知、消息表外，当前版本重点新增：
+
+- `outbox_events`：可靠事件表，用于 Feed 发布分发和删除清理。
+- `conversations`：私信会话聚合表，用于联系人列表和未读数。
+
+如果关闭 `server.auto_migrate`，需要手动维护 migration。
+
+---
+
+## 后续可继续增强
+
+- 为 `dead` Outbox 事件提供后台查看与手动重放接口。
+- 为历史私信提供一次性 conversations 回填脚本。
+- MQ consumer 支持更完整的 context 优雅退出。
+- 搜索升级到 MySQL FULLTEXT / Elasticsearch。
+- 上传存储抽象为本地、OSS、S3 多实现。
+- 前端路由拆包，优化 Vite chunk 体积。
 
 ---
 

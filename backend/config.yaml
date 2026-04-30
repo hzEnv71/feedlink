@@ -1,6 +1,7 @@
 server:
   port: 8080
   mode: debug  # debug / release
+  auto_migrate: true
 
 database:
   host: 127.0.0.1
@@ -23,7 +24,7 @@ rabbitmq:
   host: 127.0.0.1
   port: 5672
   username: admin
-  password: 123456
+  password: "123456"
   vhost: "/"
   queue: feed_queue
   dead_letter_queue: feed_queue.dlq
@@ -49,6 +50,25 @@ feed:
   outbox_max_size: 500
   # 时间线拉取默认分页大小
   page_size: 20
+
+cors:
+  allow_origins:
+    - http://localhost:3000
+    - http://127.0.0.1:3000
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+ws:
+  send_message:
+    rate: 0.8
+    burst: 40
+
+outbox:
+  batch_size: 50
+  poll_interval_ms: 2000
+  max_retries: 10
+  max_backoff_ms: 300000
+
 upload:
   # 上传文件存储路径
   path: ./uploads

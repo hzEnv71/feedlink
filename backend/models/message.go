@@ -21,3 +21,22 @@ type Message struct {
 func (Message) TableName() string {
 	return "messages"
 }
+
+// Conversation 为每个用户维护一条会话聚合记录，用于高效分页会话列表。
+type Conversation struct {
+	ID                 uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID             uint      `gorm:"index:idx_conversation_user_target,unique,priority:1;index:idx_conversation_user_last,priority:1;not null" json:"user_id"`
+	TargetUserID       uint      `gorm:"index:idx_conversation_user_target,unique,priority:2;not null" json:"target_user_id"`
+	LastMessageID      uint      `gorm:"not null" json:"last_message_id"`
+	LastMessageContent string    `gorm:"type:varchar(1000);not null" json:"last_message_content"`
+	LastMessageAt      time.Time `gorm:"index:idx_conversation_user_last,priority:2;not null" json:"last_message_at"`
+	UnreadCount        int64     `gorm:"default:0;not null" json:"unread_count"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+
+	TargetUser User `gorm:"foreignKey:TargetUserID" json:"target_user"`
+}
+
+func (Conversation) TableName() string {
+	return "conversations"
+}

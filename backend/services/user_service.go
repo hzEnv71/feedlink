@@ -94,13 +94,13 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 	user, err := s.userRepo.GetByUsername(req.Username)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("用户不存在")
+			return nil, errors.New("用户名或密码错误")
 		}
 		return nil, errors.New("查询用户失败")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		return nil, errors.New("密码错误")
+		return nil, errors.New("用户名或密码错误")
 	}
 
 	token, err := utils.GenerateToken(user.ID, user.Username)

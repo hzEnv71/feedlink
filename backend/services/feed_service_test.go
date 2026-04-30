@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseTimelineCursorRoundTrip(t *testing.T) {
-	createdAt := time.Unix(0, 1234567890)
+	createdAt := time.UnixMilli(1234)
 	cursor := buildTimelineCursor(createdAt, 42)
 
 	parsedTime, parsedID := parseTimelineCursor(cursor)

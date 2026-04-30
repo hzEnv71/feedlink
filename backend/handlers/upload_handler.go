@@ -4,6 +4,8 @@ import (
 	"feed/config"
 	"feed/utils"
 	"fmt"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +55,10 @@ func (h *UploadHandler) UploadImage(c *gin.Context) {
 		utils.Error(c, 400, "不支持的图片格式，支持: "+strings.Join(config.AppConfig.Upload.ImageExts, ", "))
 		return
 	}
+	if !hasAllowedContentType(file, []string{"image/jpeg", "image/png", "image/gif", "image/webp"}) {
+		utils.Error(c, 400, "图片文件内容与格式不匹配")
+		return
+	}
 
 	// 生成存储路径
 	datePath := time.Now().Format("2006/01/02")
@@ -82,6 +88,26 @@ func (h *UploadHandler) UploadImage(c *gin.Context) {
 	})
 }
 
+func hasAllowedContentType(fileHeader interface {
+	Open() (multipart.File, error)
+}, allowedTypes []string) bool {
+	file, err := fileHeader.Open()
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	buf := make([]byte, 512)
+	n, _ := file.Read(buf)
+	contentType := http.DetectContentType(buf[:n])
+	for _, allowed := range allowedTypes {
+		if contentType == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // UploadVideo 上传视频
 // POST /api/upload/video
 func (h *UploadHandler) UploadVideo(c *gin.Context) {
@@ -109,6 +135,10 @@ func (h *UploadHandler) UploadVideo(c *gin.Context) {
 	}
 	if !allowed {
 		utils.Error(c, 400, "不支持的视频格式，支持: "+strings.Join(config.AppConfig.Upload.VideoExts, ", "))
+		return
+	}
+	if !hasAllowedContentType(file, []string{"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"}) {
+		utils.Error(c, 400, "视频文件内容与格式不匹配")
 		return
 	}
 

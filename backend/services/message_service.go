@@ -60,14 +60,14 @@ func (s *MessageService) SendMessage(fromUserID uint, req *SendMessageRequest) (
 		Content:    content,      //设置消息内容
 		CreatedAt:  time.Now(),   //设置创建时间
 	}
-	if err := s.messageRepo.Create(msg); err != nil { //创建消息
+	if err := s.messageRepo.CreateWithConversations(msg); err != nil { //创建消息并更新会话
 		return nil, errors.New("发送失败") //发送发送失败事件
 	}
 
 	// 实时推送：对方在线时立即收到新消息事件。
 	realtime.PushToUser(req.ToUserID, realtime.MessageEvent{ //接收方：读取接收者接受的消息（写入消息 前端读取）
 		Type: "message:new", //设置消息类型
-		Data: msg, //设置消息数据
+		Data: msg,           //设置消息数据
 	})
 
 	return msg, nil //返回消息
@@ -78,12 +78,34 @@ func (s *MessageService) GetConversationMessages(currentUserID, targetUserID uin
 	if currentUserID == 0 || targetUserID == 0 { //如果当前用户ID或目标用户ID为0，则返回参数错误事件
 		return nil, 0, errors.New("参数错误")
 	}
+	if _, err := s.userRepo.GetByID(targetUserID); err != nil {
+		return nil, 0, errors.New("接收方用户不存在")
+	}
 	list, total, err := s.messageRepo.GetByConversation(currentUserID, targetUserID, page, pageSize) //获取会话消息
 	if err != nil {
 		return nil, 0, err //发送获取会话消息失败事件
 	}
+	if total > 0 {
+		_ = s.messageRepo.EnsureConversationFromHistory(currentUserID, targetUserID)
+	}
 	_ = s.messageRepo.MarkReadFromTo(targetUserID, currentUserID) //标记已读
-	return list, total, nil                                       //返回会话消息
+	return s.enrichMessageUsers(list), total, nil                 //返回会话消息
+}
+
+func (s *MessageService) enrichMessageUsers(list []models.Message) []models.Message {
+	for i := range list {
+		if list[i].FromUser.ID == 0 {
+			if user, err := s.userRepo.GetByID(list[i].FromUserID); err == nil {
+				list[i].FromUser = *user
+			}
+		}
+		if list[i].ToUser.ID == 0 {
+			if user, err := s.userRepo.GetByID(list[i].ToUserID); err == nil {
+				list[i].ToUser = *user
+			}
+		}
+	}
+	return list
 }
 
 // 获取会话列表
@@ -92,46 +114,22 @@ func (s *MessageService) GetConversationList(currentUserID uint, page, pageSize 
 		return nil, 0, errors.New("请先登录") //发送请先登录事件
 	}
 
-	messages, err := s.messageRepo.ListByUser(currentUserID)
+	conversations, total, err := s.messageRepo.ListConversations(currentUserID, page, pageSize)
 	if err != nil {
 		return nil, 0, err //发送获取会话列表失败事件
 	}
 
-	conversationMap := map[uint]ConversationItem{} //创建会话映射
-	for _, msg := range messages {
-		targetID := msg.ToUserID             //获取目标用户ID
-		targetUser := msg.ToUser             //获取目标用户
-		if msg.FromUserID != currentUserID { //如果发送者ID不等于当前用户ID
-			targetID = msg.FromUserID //获取发送者ID
-			targetUser = msg.FromUser //获取发送者
-		}
-
-		if _, exists := conversationMap[targetID]; exists { //如果会话映射中存在目标用户ID，则跳过
-			continue
-		}
-
-		unread, _ := s.messageRepo.CountUnreadFromTo(targetID, currentUserID) //获取未读消息数
-		conversationMap[targetID] = ConversationItem{
-			User:       targetUser.ToResponse(),            //转换为目标用户响应
-			LastMsg:    msg.Content,                        //获取最后一条消息内容
-			LastTime:   msg.CreatedAt.Format(time.RFC3339), //获取最后一条消息时间
-			Unread:     unread,                             //获取未读消息数
-			TargetID:   targetID,                           //获取目标用户ID
-			TargetName: targetUser.Nickname,                //获取目标用户昵称
-		}
+	items := make([]ConversationItem, 0, len(conversations))
+	for _, conv := range conversations {
+		items = append(items, ConversationItem{
+			User:       conv.TargetUser.ToResponse(),
+			LastMsg:    conv.LastMessageContent,
+			LastTime:   conv.LastMessageAt.Format(time.RFC3339),
+			Unread:     conv.UnreadCount,
+			TargetID:   conv.TargetUserID,
+			TargetName: conv.TargetUser.Nickname,
+		})
 	}
 
-	all := make([]ConversationItem, 0, len(conversationMap)) //创建会话列表
-	for _, item := range conversationMap {
-		all = append(all, item) //添加会话列表
-	}
-
-	total := int64(len(all))       //获取会话列表总数
-	start := (page - 1) * pageSize //获取起始位置
-	if start >= len(all) {
-		return []ConversationItem{}, total, nil //发送会话列表为空事件
-	}
-	end := min(start+pageSize, len(all)) //获取结束位置
-
-	return all[start:end], total, nil //返回会话列表
+	return items, total, nil //返回会话列表
 }
